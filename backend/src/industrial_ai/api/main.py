@@ -1,5 +1,7 @@
 """FastAPI application factory."""
 
+import asyncio
+import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -12,10 +14,13 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from industrial_ai import __version__
 from industrial_ai.api.deps import Container, build_container
-from industrial_ai.api.routers import assistant, equipment, health, maintenance
+from industrial_ai.api.routers import assistant, equipment, health, maintenance, users
 from industrial_ai.core.config import Settings, get_settings
 from industrial_ai.core.errors import AppError, app_error_handler
 from industrial_ai.core.logging import configure_logging, request_id_var
+from industrial_ai.storage.memory import InMemoryTimeSeriesStore
+
+logger = logging.getLogger(__name__)
 
 API_PREFIX = "/internal/v1"
 _MAX_REQUEST_ID_LEN = 128
@@ -66,10 +71,17 @@ def create_app(settings: Settings | None = None, container: Container | None = N
         configure_logging(settings.log_level, settings.app_env)
         if getattr(app.state, "container", None) is None:
             app.state.container = build_container(settings)
+        container: Container = app.state.container
+        collector_task = _start_embedded_collector(container) if settings.api_embedded_collector \
+            else None
         try:
             yield
         finally:
-            await app.state.container.aclose()
+            if collector_task is not None:
+                collector_task.cancel()
+                await asyncio.gather(collector_task, return_exceptions=True)
+                await container.collector.close()  # type: ignore[union-attr]
+            await container.aclose()
 
     app = FastAPI(
         title="industrial-ai compute service",
@@ -89,7 +101,25 @@ def create_app(settings: Settings | None = None, container: Container | None = N
     app.include_router(equipment.router, prefix=API_PREFIX)
     app.include_router(maintenance.router, prefix=API_PREFIX)
     app.include_router(assistant.router, prefix=API_PREFIX)
+    app.include_router(users.router, prefix=API_PREFIX)
     return app
+
+
+def _start_embedded_collector(container: Container) -> asyncio.Task[None]:
+    """Run source -> IoTDB/memory inside the API process (local development only)."""
+    from industrial_ai.collector.factory import build_pipeline
+
+    store = container.timeseries if isinstance(container.timeseries,
+                                               InMemoryTimeSeriesStore) else None
+    container.collector = build_pipeline(container.settings, memory_store=store)
+    task = asyncio.create_task(container.collector.run(), name="embedded-collector")
+
+    def _report(t: asyncio.Task[None]) -> None:
+        if not t.cancelled() and t.exception() is not None:
+            logger.error("embedded collector stopped with an error", exc_info=t.exception())
+
+    task.add_done_callback(_report)
+    return task
 
 
 def app_factory() -> FastAPI:

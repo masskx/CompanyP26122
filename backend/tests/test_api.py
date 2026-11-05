@@ -55,7 +55,8 @@ async def test_ready_reports_components(client):
     body = (await client.get("/health/ready")).json()
     assert body["status"] == "ready"
     assert body["components"]["timeseries"]["backend"] == "memory"
-    assert body["components"]["vector_db"]["status"] == "not_configured"
+    assert body["components"]["knowledge_base"]["status"] == "not_configured"
+    assert body["components"]["session_store"]["status"] == "ok"
 
 
 @pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer wrong"},
@@ -209,24 +210,3 @@ async def test_storage_failure_marks_analysis_failed(client, timeseries, monkeyp
     result = (await client.get(f"/internal/v1/maintenance/analyses/{analysis_id}",
                                headers=AUTH)).json()
     assert result["status"] == "failed"
-
-
-# ---- assistant ---------------------------------------------------------------------------
-
-async def test_assistant_reports_unavailable_and_keeps_session(client):
-    resp = await client.post("/internal/v1/assistant/chat", json={"message": "隔离室状态？"},
-                             headers=AUTH)
-    assert resp.status_code == 200
-    session_id = resp.headers["x-session-id"]
-    events = parse_sse(resp.text)
-    assert [k for k, _ in events] == ["stage", "error", "done"]
-    assert events[1][1]["code"] == "knowledge_base_unavailable"
-
-    msgs = await client.get(f"/internal/v1/assistant/sessions/{session_id}/messages",
-                            headers=AUTH)
-    assert [m["role"] for m in msgs.json()] == ["user"]
-
-    other_user = {**AUTH, "X-User-Id": "u-2"}
-    denied = await client.get(f"/internal/v1/assistant/sessions/{session_id}/messages",
-                              headers=other_user)
-    assert denied.status_code == 404

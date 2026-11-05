@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from industrial_ai.schemas.analysis import AnalysisResult
-from industrial_ai.schemas.assistant import ChatMessage, ChatSession
 from industrial_ai.schemas.common import TelemetryPoint, TimeRange
 from industrial_ai.schemas.equipment import Equipment
 from industrial_ai.schemas.events import EventType, StreamEvent
@@ -75,13 +74,3 @@ class AnalysisStore(Protocol):
     ) -> list[StreamEvent]:
         """Events with seq > after_seq; waits up to `wait_seconds` if there are none."""
         ...
-
-
-class SessionStore(Protocol):
-    async def create_session(self, user_id: str | None) -> ChatSession: ...
-
-    async def get_session(self, session_id: str) -> ChatSession | None: ...
-
-    async def append_message(self, message: ChatMessage) -> None: ...
-
-    async def list_messages(self, session_id: str) -> list[ChatMessage]: ...

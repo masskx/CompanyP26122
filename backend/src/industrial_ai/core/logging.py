@@ -5,6 +5,7 @@ import logging
 import sys
 from contextvars import ContextVar
 from datetime import UTC, datetime
+from typing import TextIO
 
 request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
 
@@ -34,8 +35,9 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False, default=str)
 
 
-def configure_logging(level: str, environment: str) -> None:
-    handler = logging.StreamHandler(sys.stdout)
+def configure_logging(level: str, environment: str, *, stream: TextIO | None = None) -> None:
+    """Services log to stdout; command-line tools pass stderr so stdout stays clean output."""
+    handler = logging.StreamHandler(stream or sys.stdout)
     handler.setFormatter(JsonFormatter(environment))
     root = logging.getLogger()
     root.handlers[:] = [handler]

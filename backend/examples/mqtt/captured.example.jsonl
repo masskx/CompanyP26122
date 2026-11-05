@@ -1,0 +1,6 @@
+# Captured messages for offline parser testing: one {"topic": ..., "payload": ...} per line.
+{"topic": "plant/AS01/radiation/gw-1", "payload": {"gateway": "gw-1", "readings": [{"deviceId": "GM-0001", "time": "2026-11-05T10:00:00+08:00", "doseRate": 512, "unit": "nSv/h", "state": "NORMAL"}, {"deviceId": "GM-0002", "time": "2026-11-05T10:00:00+08:00", "doseRate": 1.21, "unit": "uSv/h", "state": "NORMAL"}]}}
+{"topic": "plant/AS01/radiation/gw-1", "payload": {"gateway": "gw-1", "readings": [{"deviceId": "ENV-A", "time": "2026-11-05T10:00:30+08:00", "doseRate": "86", "state": "NORMAL"}]}}
+{"topic": "plant/AS01/radiation/gw-1", "payload": {"gateway": "gw-1", "readings": [{"deviceId": "GM-0001", "time": "2026-11-05T10:00:30+08:00", "doseRate": 0, "unit": "nSv/h", "state": "FAULT"}]}}
+{"topic": "plant/AS01/radiation/gw-2", "payload": {"gateway": "gw-2", "readings": [{"deviceId": "GM-9999", "time": "2026-11-05T10:00:30+08:00", "doseRate": 300, "unit": "nSv/h", "state": "NORMAL"}]}}
+{"topic": "plant/AS01/status/gw-1", "payload": {"online": true}}

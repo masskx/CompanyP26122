@@ -1,0 +1,22 @@
+{
+  "_comment": "EXAMPLE ONLY: a hypothetical vendor format, to show how a real MQTT format is described without code. Topic plant/<site>/radiation/<gateway>; one message carries a list of readings in nSv/h with ISO-8601 timestamps; vendor device ids are mapped to catalog equipment ids. Replace with the real format when it is known, then test with: python scripts/mqtt_ingest.py --from-file examples/mqtt/captured.example.jsonl --dry-run --parser mapping --parser-config examples/mqtt/mapping.example.json",
+  "topic_pattern": "^plant/(?P<site_id>[^/]+)/radiation/(?P<gateway>[^/]+)$",
+  "records_path": "readings",
+  "fields": {
+    "device": "deviceId",
+    "timestamp": "time",
+    "value": "doseRate",
+    "unit": "unit",
+    "status": "state"
+  },
+  "timestamp_format": "iso8601",
+  "default_unit": "nSv/h",
+  "default_metric": "dose_rate",
+  "ok_status": ["NORMAL", "OK"],
+  "device_map": {
+    "GM-0001": {"site_id": "AS01", "equipment_id": "AS01-ISO-RM-01"},
+    "GM-0002": {"site_id": "AS01", "equipment_id": "AS01-ISO-RM-02"},
+    "ENV-A":   {"site_id": "AS01", "equipment_id": "AS01-ENV-01"}
+  },
+  "unmapped_devices": "reject"
+}
