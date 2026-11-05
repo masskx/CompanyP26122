@@ -23,27 +23,38 @@ async def ready(c: Container = Depends(get_container)) -> JSONResponse:
     except StorageUnavailableError:
         timeseries_status = "unavailable"
 
+    try:
+        await c.conversations.ping()
+        sessions_status = "ok"
+    except StorageUnavailableError:
+        sessions_status = "unavailable"
+    knowledge = await c.retriever.status() if c.retriever is not None else {
+        "status": "not_configured"}
+
     components = {
         "timeseries": {"backend": s.timeseries_backend, "status": timeseries_status},
         "analysis_store": {"backend": s.analysis_store_backend, "status": "ok",
                            "persistent": s.analysis_store_backend != "memory"},
-        "session_store": {"backend": s.session_store_backend, "status": "ok",
+        "session_store": {"backend": s.session_store_backend, "status": sessions_status,
                           "persistent": s.session_store_backend != "memory"},
         "llm": {"provider": s.llm_provider,
                 "status": "not_configured" if s.llm_provider == "none" else "configured_unchecked"},
         "collector": ({"mode": "embedded", "source": s.collector_source,
                        **c.collector.stats.snapshot()}
                       if c.collector is not None else {"mode": "external"}),
-        "vector_db": {"status": "not_configured"},
-        "embedding": {"status": "not_configured"},
-        "rerank": {"status": "not_configured"},
+        "knowledge_base": knowledge,
+        "embedding": {"provider": s.embedding_provider, "model": s.embedding_model
+                      if s.embedding_provider != "none" else None,
+                      "dimensions": s.embedding_dimensions},
+        "identity": {"mode": s.user_identity_mode},
     }
-    is_ready = timeseries_status == "ok"
+    # Knowledge/LLM problems degrade the assistant; they do not make the service unready.
+    is_ready = timeseries_status == "ok" and sessions_status == "ok"
     return JSONResponse(
         status_code=200 if is_ready else 503,
         content={
             "status": "ready" if is_ready else "not_ready",
-            "knowledge_index_version": s.knowledge_index_version,
+            "knowledge_index_version": knowledge.get("version"),
             "components": components,
         },
     )

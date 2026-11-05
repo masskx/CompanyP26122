@@ -9,13 +9,33 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    # env_ignore_empty: `KEY=` in .env means "use the default", not an empty string.
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore",
+                                      env_ignore_empty=True)
 
     app_env: str = "development"
     log_level: str = "INFO"
 
     # Service authentication: the MES main backend is the only trusted caller.
     compute_service_token: SecretStr | None = None
+
+    # ---- End-user identity (see core/identity.py) ----
+    # dev:             X-User-Id header or DEV_DEFAULT_USER; refused when APP_ENV=production
+    # trusted_gateway: X-User-Id / X-User-Name / X-User-Roles set by the MES main backend, trusted
+    #                  only because the request carries the service token (current design)
+    # jwt:             signed user assertion issued by the client's identity provider
+    user_identity_mode: Literal["dev", "trusted_gateway", "jwt"] = "trusted_gateway"
+    dev_default_user: str = "dev-user"
+    trusted_gateway_issuer: str = "mes-main-backend"
+    user_jwt_header: str = "X-User-Assertion"
+    user_jwt_algorithms: list[str] = Field(default_factory=lambda: ["RS256"])
+    user_jwt_key: SecretStr | None = None  # HMAC secret or PEM public key
+    user_jwt_key_file: Path | None = None  # alternative to USER_JWT_KEY
+    user_jwt_issuer: str | None = None
+    user_jwt_audience: str | None = None
+    user_jwt_leeway_seconds: int = Field(default=30, ge=0)
+    user_jwt_name_claim: str = "name"
+    user_jwt_roles_claim: str = "roles"
 
     # Equipment master data. Placeholder until the MES equipment API contract is fixed.
     equipment_catalog_path: Path | None = None
@@ -65,9 +85,14 @@ class Settings(BaseSettings):
     mqtt_ca_file: Path | None = None
     mqtt_persistent_session: bool = False
 
-    # Relational storage for analysis results and assistant sessions is not finalised.
+    # Analysis results stay in memory for now.
     analysis_store_backend: Literal["memory"] = "memory"
-    session_store_backend: Literal["memory"] = "memory"
+    # Users, chat sessions, messages, citations, feedback.
+    session_store_backend: Literal["memory", "opengauss"] = "memory"
+    # libpq DSN, e.g. postgresql://app:***@127.0.0.1:5432/industrial_ai
+    opengauss_dsn: SecretStr | None = None
+    opengauss_pool_min: int = Field(default=1, ge=0)
+    opengauss_pool_max: int = Field(default=10, ge=1)
 
     # Deterministic rule parameters.
     health_window_hours: int = Field(default=24, ge=1)
@@ -80,8 +105,39 @@ class Settings(BaseSettings):
     # Streaming.
     sse_heartbeat_seconds: float = Field(default=15, gt=0)
 
-    # Assistant input limits.
+    # Assistant.
     assistant_max_message_chars: int = Field(default=4000, ge=1)
+    assistant_history_messages: int = Field(default=20, ge=0)  # prior turns sent to the model
+    assistant_max_tool_steps: int = Field(default=4, ge=1, le=10)
+    assistant_tool_result_chars: int = Field(default=8000, ge=500)
+    assistant_max_answer_tokens: int = Field(default=2048, ge=64)
+
+    # ---- Embedding (GLM). Index build and query MUST use the same model + dimensions;
+    # the retriever refuses to search a collection built with a different configuration.
+    # none:  knowledge search disabled
+    # zhipu: Zhipu BigModel public API (development only; refused in production)
+    # local: privately deployed endpoint with the same request/response shape
+    embedding_provider: Literal["none", "zhipu", "local"] = "none"
+    embedding_base_url: str | None = None
+    embedding_api_key: SecretStr | None = None
+    embedding_model: str = "embedding-3"
+    embedding_dimensions: int | None = Field(default=1024, ge=1)  # embedding-3: 256..2048
+    embedding_batch_size: int = Field(default=16, ge=1, le=64)
+    embedding_max_batch_chars: int = Field(default=2800, ge=100)
+    embedding_timeout_seconds: float = Field(default=30, gt=0)
+    embedding_max_retries: int = Field(default=2, ge=0, le=5)
+
+    # ---- Milvus knowledge base ----
+    milvus_uri: str | None = None  # http://127.0.0.1:19530 (or a local file for Milvus Lite)
+    milvus_token: SecretStr | None = None  # "user:password" or API token
+    milvus_db_name: str = "default"
+    kb_alias: str = Field(default="nuclear_kb", pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
+    kb_index_type: str = "HNSW"
+    kb_top_k: int = Field(default=5, ge=1, le=20)
+    kb_min_score: float = Field(default=0.3, ge=-1, le=1)  # cosine similarity floor
+    kb_allowed_classifications: list[str] = Field(default_factory=lambda: ["public", "internal"])
+    kb_chunk_chars: int = Field(default=800, ge=100)
+    kb_chunk_overlap: int = Field(default=120, ge=0)
 
     # LLM. Both providers speak the OpenAI-compatible chat-completions API, so switching
     # from the DeepSeek public API (development/testing) to local vLLM is configuration only.
@@ -102,8 +158,8 @@ class Settings(BaseSettings):
     # vLLM only: Qwen3 thinking mode. Off by default; reasoning text is never shown to users.
     llm_enable_thinking: bool = False
 
-    # RAG. Not wired yet; reported by the health endpoints.
-    knowledge_index_version: str | None = None
+    # Pin queries to one knowledge version instead of following the alias (optional).
+    knowledge_index_version: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_]+$")
 
     @model_validator(mode="after")
     def _check_llm(self) -> "Settings":
@@ -118,6 +174,38 @@ class Settings(BaseSettings):
         if self.llm_provider == "vllm" and not (self.llm_base_url and self.llm_model):
             raise ValueError("LLM_BASE_URL and LLM_MODEL are required for LLM_PROVIDER=vllm")
         return self
+
+    @model_validator(mode="after")
+    def _check_identity_and_stores(self) -> "Settings":
+        production = self.app_env == "production"
+        if self.user_identity_mode == "dev" and production:
+            raise ValueError("USER_IDENTITY_MODE=dev is not allowed when APP_ENV=production")
+        if self.user_identity_mode == "jwt":
+            if not (self.user_jwt_key or self.user_jwt_key_file):
+                raise ValueError("USER_JWT_KEY or USER_JWT_KEY_FILE is required for jwt mode")
+            if not (self.user_jwt_issuer and self.user_jwt_audience):
+                raise ValueError("USER_JWT_ISSUER and USER_JWT_AUDIENCE are required for jwt mode")
+        if self.session_store_backend == "opengauss" and self.opengauss_dsn is None:
+            raise ValueError("OPENGAUSS_DSN is required for SESSION_STORE_BACKEND=opengauss")
+        if self.embedding_provider == "zhipu":
+            if production:
+                raise ValueError(
+                    "EMBEDDING_PROVIDER=zhipu sends text to a public API and is not allowed when "
+                    "APP_ENV=production; use a private deployment (EMBEDDING_PROVIDER=local)"
+                )
+            if self.embedding_api_key is None:
+                raise ValueError("EMBEDDING_API_KEY is required for EMBEDDING_PROVIDER=zhipu")
+        if self.embedding_provider == "local" and not self.embedding_base_url:
+            raise ValueError("EMBEDDING_BASE_URL is required for EMBEDDING_PROVIDER=local")
+        if self.kb_chunk_overlap >= self.kb_chunk_chars:
+            raise ValueError("KB_CHUNK_OVERLAP must be smaller than KB_CHUNK_CHARS")
+        return self
+
+    @property
+    def resolved_embedding_base_url(self) -> str | None:
+        if self.embedding_provider == "zhipu":
+            return self.embedding_base_url or "https://open.bigmodel.cn/api/paas/v4"
+        return self.embedding_base_url if self.embedding_provider == "local" else None
 
     @property
     def resolved_llm_base_url(self) -> str | None:

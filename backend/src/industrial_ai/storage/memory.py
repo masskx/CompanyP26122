@@ -5,13 +5,10 @@ Data is lost on restart. Replace with real backends once the database products a
 
 import asyncio
 import bisect
-import uuid
 from collections import defaultdict
-from datetime import UTC, datetime
 from typing import Any
 
 from industrial_ai.schemas.analysis import AnalysisResult
-from industrial_ai.schemas.assistant import ChatMessage, ChatSession
 from industrial_ai.schemas.common import TelemetryPoint, TimeRange
 from industrial_ai.schemas.events import EventType, StreamEvent
 from industrial_ai.storage.base import AnalysisRecord
@@ -103,25 +100,3 @@ class InMemoryAnalysisStore:
                 except TimeoutError:
                     return []
             return pending()
-
-
-class InMemorySessionStore:
-    def __init__(self) -> None:
-        self._sessions: dict[str, ChatSession] = {}
-        self._messages: dict[str, list[ChatMessage]] = defaultdict(list)
-
-    async def create_session(self, user_id: str | None) -> ChatSession:
-        session = ChatSession(
-            session_id=f"cs_{uuid.uuid4().hex}", user_id=user_id, created_at=datetime.now(UTC)
-        )
-        self._sessions[session.session_id] = session
-        return session
-
-    async def get_session(self, session_id: str) -> ChatSession | None:
-        return self._sessions.get(session_id)
-
-    async def append_message(self, message: ChatMessage) -> None:
-        self._messages[message.session_id].append(message)
-
-    async def list_messages(self, session_id: str) -> list[ChatMessage]:
-        return list(self._messages.get(session_id, []))

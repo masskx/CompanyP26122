@@ -8,10 +8,12 @@ Prompt and completion text are never logged; only latency, token usage and error
 """
 
 import asyncio
+import json
 import logging
 import re
 import time
-from dataclasses import dataclass
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import httpx
@@ -70,6 +72,74 @@ class ChatResult:
     model: str
     prompt_tokens: int | None
     completion_tokens: int | None
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    id: str
+    name: str
+    arguments: str  # raw JSON text as produced by the model
+
+
+@dataclass(frozen=True)
+class TextDelta:
+    text: str
+
+
+@dataclass
+class StreamResult:
+    content: str
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    finish_reason: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+
+
+def _partial_suffix(text: str, tag: str) -> int:
+    """Length of the longest suffix of `text` that is a proper prefix of `tag`."""
+    for k in range(min(len(tag) - 1, len(text)), 0, -1):
+        if text.endswith(tag[:k]):
+            return k
+    return 0
+
+
+class ThinkFilter:
+    """Removes <think>…</think> from a token stream, even when tags are split across chunks."""
+
+    OPEN, CLOSE = "<think>", "</think>"
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._inside = False
+
+    def feed(self, text: str) -> str:
+        self._buf += text
+        out: list[str] = []
+        while True:
+            if self._inside:
+                end = self._buf.find(self.CLOSE)
+                if end == -1:
+                    keep = _partial_suffix(self._buf, self.CLOSE)
+                    self._buf = self._buf[len(self._buf) - keep:] if keep else ""
+                    break
+                self._buf = self._buf[end + len(self.CLOSE):]
+                self._inside = False
+            else:
+                start = self._buf.find(self.OPEN)
+                if start == -1:
+                    safe = len(self._buf) - _partial_suffix(self._buf, self.OPEN)
+                    out.append(self._buf[:safe])
+                    self._buf = self._buf[safe:]
+                    break
+                out.append(self._buf[:start])
+                self._buf = self._buf[start + len(self.OPEN):]
+                self._inside = True
+        return "".join(out)
+
+    def flush(self) -> str:
+        rest = "" if self._inside else self._buf
+        self._buf = ""
+        return rest
 
 
 def clean_content(text: str) -> str:
@@ -149,6 +219,101 @@ class LLMClient:
             "prompt_tokens": result.prompt_tokens,
             "completion_tokens": result.completion_tokens}})
         return result
+
+    async def stream_chat(
+        self, messages: list[dict[str, Any]], *, tools: list[dict] | None = None,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[TextDelta | StreamResult]:
+        """Stream a completion. Yields TextDelta chunks, then exactly one StreamResult.
+
+        Transient failures are retried only before the first chunk has been yielded.
+        """
+        payload = self._payload(messages, json_mode=False)
+        payload["stream"] = True
+        payload["stream_options"] = {"include_usage": True}
+        if max_tokens:
+            payload["max_tokens"] = max_tokens
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+
+        attempts = self.config.max_retries + 1
+        for attempt in range(1, attempts + 1):
+            started = False
+            try:
+                async with self._semaphore:
+                    async for item in self._stream_once(payload):
+                        started = True
+                        yield item
+                return
+            except LLMError as exc:
+                if started or not exc.retryable or attempt == attempts:
+                    raise
+                await asyncio.sleep(self.config.retry_backoff_seconds * 2 ** (attempt - 1))
+
+    async def _stream_once(self, payload: dict[str, Any]
+                           ) -> AsyncIterator[TextDelta | StreamResult]:
+        t0 = time.perf_counter()
+        think = ThinkFilter()
+        text: list[str] = []
+        calls: dict[int, dict[str, str]] = {}
+        result = StreamResult(content="")
+        try:
+            async with self._http.stream("POST", "/chat/completions", json=payload) as resp:
+                if resp.status_code != 200:
+                    await resp.aread()
+                    raise LLMError(f"model service returned HTTP {resp.status_code}",
+                                   retryable=resp.status_code in _RETRYABLE_STATUS)
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except json.JSONDecodeError as exc:
+                        raise LLMError("malformed stream chunk", retryable=False) from exc
+                    usage = chunk.get("usage") or {}
+                    if usage:
+                        result.prompt_tokens = usage.get("prompt_tokens")
+                        result.completion_tokens = usage.get("completion_tokens")
+                    for choice in chunk.get("choices") or []:
+                        delta = choice.get("delta") or {}
+                        if delta.get("content"):
+                            visible = think.feed(delta["content"])
+                            if visible:
+                                text.append(visible)
+                                yield TextDelta(visible)
+                        for tc in delta.get("tool_calls") or []:
+                            entry = calls.setdefault(int(tc.get("index", 0)),
+                                                     {"id": "", "name": "", "arguments": ""})
+                            if tc.get("id"):
+                                entry["id"] = tc["id"]
+                            fn = tc.get("function") or {}
+                            if fn.get("name") and not entry["name"]:
+                                entry["name"] = fn["name"]
+                            entry["arguments"] += fn.get("arguments") or ""
+                        result.finish_reason = choice.get("finish_reason") or result.finish_reason
+        except httpx.TimeoutException as exc:
+            raise LLMError("model request timed out", retryable=True) from exc
+        except httpx.TransportError as exc:
+            raise LLMError("model service unreachable", retryable=True) from exc
+
+        tail = think.flush()
+        if tail:
+            text.append(tail)
+            yield TextDelta(tail)
+        result.content = "".join(text)
+        result.tool_calls = [ToolCall(id=c["id"] or f"call_{i}", name=c["name"],
+                                      arguments=c["arguments"])
+                             for i, c in sorted(calls.items()) if c["name"]]
+        logger.info("llm stream", extra={"fields": {
+            "provider": self.config.provider, "model": self.config.model,
+            "latency_ms": round((time.perf_counter() - t0) * 1000),
+            "prompt_tokens": result.prompt_tokens, "completion_tokens": result.completion_tokens,
+            "tool_calls": [c.name for c in result.tool_calls]}})
+        yield result
 
     async def aclose(self) -> None:
         await self._http.aclose()

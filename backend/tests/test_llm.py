@@ -219,3 +219,38 @@ async def test_analysis_uses_model_explanation(settings, catalog, timeseries):
     assert result["health_level"] == "inspect"
     assert result["risk_summary"] == "模型说明"
     assert result["model"]["provider"] == "deepseek"
+
+
+# ---- streaming ---------------------------------------------------------------------------
+
+def test_think_filter_handles_split_tags():
+    from industrial_ai.integrations.llm_client import ThinkFilter
+
+    f = ThinkFilter()
+    pieces = ["答案<th", "ink>内部推", "理</thi", "nk>：1000", " µSv/h<", "b>"]
+    out = "".join(f.feed(p) for p in pieces) + f.flush()
+    assert out == "答案：1000 µSv/h<b>"
+
+
+async def test_stream_assembles_fragmented_tool_calls():
+    from industrial_ai.integrations.llm_client import StreamResult
+
+    from .fakes import ScriptedLLM, tool_reply
+
+    llm = ScriptedLLM(tool_reply("search_knowledge_base", {"query": "剂量率换算"}))
+    items = [i async for i in llm.client().stream_chat([{"role": "user", "content": "q"}],
+                                                       tools=[{"type": "function"}])]
+    [result] = items
+    assert isinstance(result, StreamResult) and result.finish_reason == "tool_calls"
+    [call] = result.tool_calls
+    assert call.id == "call_1" and json.loads(call.arguments) == {"query": "剂量率换算"}
+    assert llm.requests[0]["stream"] is True and llm.requests[0]["tool_choice"] == "auto"
+
+
+async def test_stream_retries_only_before_first_chunk():
+    from .fakes import ScriptedLLM, text_reply
+
+    llm = ScriptedLLM(httpx.Response(503), text_reply("好"))
+    texts = [i.text for i in [x async for x in llm.client().stream_chat([])]
+             if hasattr(i, "text")]
+    assert texts == ["好"] and len(llm.requests) == 2

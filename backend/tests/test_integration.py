@@ -43,6 +43,12 @@ def iotdb_settings():
                         iotdb_user=os.environ.get("IOTDB_TEST_USER", "root"),
                         iotdb_password=SecretStr(os.environ.get("IOTDB_TEST_PASSWORD", "root")),
                         iotdb_root_path=root)
+    # Fail fast: the pipeline deliberately retries writes forever while storage is down.
+    import socket
+    try:
+        socket.create_connection((settings.iotdb_host, settings.iotdb_port), timeout=3).close()
+    except OSError:
+        pytest.fail(f"IoTDB not reachable at {settings.iotdb_host}:{settings.iotdb_port}")
     yield settings
     pool = pool_factory_from_settings(settings)()
     session = pool.get_session()

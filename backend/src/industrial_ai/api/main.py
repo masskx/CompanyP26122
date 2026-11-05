@@ -14,7 +14,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from industrial_ai import __version__
 from industrial_ai.api.deps import Container, build_container
-from industrial_ai.api.routers import assistant, equipment, health, maintenance
+from industrial_ai.api.routers import assistant, equipment, health, maintenance, users
 from industrial_ai.core.config import Settings, get_settings
 from industrial_ai.core.errors import AppError, app_error_handler
 from industrial_ai.core.logging import configure_logging, request_id_var
@@ -101,6 +101,7 @@ def create_app(settings: Settings | None = None, container: Container | None = N
     app.include_router(equipment.router, prefix=API_PREFIX)
     app.include_router(maintenance.router, prefix=API_PREFIX)
     app.include_router(assistant.router, prefix=API_PREFIX)
+    app.include_router(users.router, prefix=API_PREFIX)
     return app
 
 
