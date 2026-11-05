@@ -1,0 +1,15 @@
+{
+  "_comment": "EXAMPLE ONLY: an invented vendor format showing how to describe the real MQTT format without code. Topic plant/<site>/radiation/<gateway>; each message carries a list of readings in nSv/h with ISO-8601 times; vendor device ids map to devices.json ids. Test with: python scripts/ingest_mqtt.py --file data/mqtt/captured.example.jsonl --dry-run --parser mapping --mapping data/mqtt/mapping.example.json",
+  "topic_pattern": "^plant/(?P<site>[^/]+)/radiation/(?P<gateway>[^/]+)$",
+  "records_path": "readings",
+  "fields": {"device": "deviceId", "timestamp": "time", "value": "doseRate", "unit": "unit", "status": "state"},
+  "default_unit": "nSv/h",
+  "default_metric": "dose_rate",
+  "ok_status": ["NORMAL", "OK"],
+  "device_map": {
+    "GM-0001": {"site": "AS01", "device_id": "AS01-ISO-RM-01"},
+    "GM-0002": {"site": "AS01", "device_id": "AS01-ISO-RM-02"},
+    "ENV-A":   {"site": "AS01", "device_id": "AS01-ENV-01"}
+  },
+  "unmapped_devices": "reject"
+}

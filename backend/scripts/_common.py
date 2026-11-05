@@ -1,41 +1,29 @@
-"""Shared helpers for the scripts in this folder (not a public module)."""
+"""Shared bits for the scripts (run them from the backend/ directory)."""
 
 import argparse
 import sys
 from pathlib import Path
 
-BACKEND_DIR = Path(__file__).resolve().parent.parent
+BACKEND = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BACKEND))  # works without `pip install -e .` too
 
-try:
-    import industrial_ai  # noqa: F401
-except ImportError:  # running from a checkout without `pip install -e .`
-    sys.path.insert(0, str(BACKEND_DIR / "src"))
+from app.config import Settings  # noqa: E402
+
+
+def parser(doc: str) -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description=doc,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--env-file", default=".env", help="settings file (default .env)")
+    return p
+
+
+def settings(args: argparse.Namespace, **overrides) -> Settings:
+    env = Path(args.env_file)
     try:
-        import industrial_ai  # noqa: F401
-    except ImportError:
-        sys.exit('industrial_ai is not importable. Run:  pip install -e ".[dev,mqtt]"  '
-                 "from the backend/ directory first.")
-
-from industrial_ai.core.config import Settings  # noqa: E402
-from industrial_ai.core.logging import configure_logging  # noqa: E402
-
-
-def add_env_arg(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--env-file", default=".env",
-                        help="settings file (default: .env in the current directory)")
-
-
-def load_settings(args: argparse.Namespace, **overrides) -> Settings:
-    env_file = Path(args.env_file)
-    if not env_file.is_file() and args.env_file != ".env":
-        sys.exit(f"env file not found: {env_file}")
-    try:
-        settings = Settings(_env_file=env_file if env_file.is_file() else None,
-                            **{k: v for k, v in overrides.items() if v is not None})
-    except Exception as exc:  # pydantic ValidationError: show the readable part
+        return Settings(_env_file=env if env.is_file() else None,
+                        **{k: v for k, v in overrides.items() if v is not None})
+    except Exception as exc:
         sys.exit(f"invalid configuration:\n{exc}")
-    configure_logging(settings.log_level, settings.app_env, stream=sys.stderr)
-    return settings
 
 
 def ok(msg: str) -> None:
@@ -48,7 +36,3 @@ def fail(msg: str) -> None:
 
 def skip(msg: str) -> None:
     print(f"  [SKIP] {msg}")
-
-
-def header(title: str) -> None:
-    print(f"\n== {title}")

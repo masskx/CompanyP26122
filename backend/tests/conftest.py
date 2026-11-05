@@ -1,92 +1,166 @@
-from collections.abc import AsyncIterator
-from datetime import UTC, datetime, timedelta
+import hashlib
+import json
+import math
+from datetime import UTC, datetime
 
 import httpx
 import pytest
-from pydantic import SecretStr
+from langchain_core.embeddings import Embeddings
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 
-from industrial_ai.api.deps import Container, build_container
-from industrial_ai.api.main import create_app
-from industrial_ai.core.config import Settings
-from industrial_ai.schemas.common import TelemetryPoint
-from industrial_ai.schemas.equipment import Equipment, MetricDefinition, MetricThresholds
-from industrial_ai.storage.catalog import StaticEquipmentCatalog
-from industrial_ai.storage.memory import InMemoryTimeSeriesStore
+from app.config import BASE_DIR, Settings
+from app.db.chat_store import MemoryChatStore
+from app.deps import build_resources
+from app.ingestion.parsers import SimulatorFormat
+from app.ingestion.pipeline import Pipeline
+from app.ingestion.simulator import SimulatedSource
+from app.main import create_app
+from app.timeseries.devices import DeviceCatalog
+from app.timeseries.iotdb import MemoryTimeSeries
 
-TOKEN = "test-service-token"
-AUTH = {"Authorization": f"Bearer {TOKEN}", "X-User-Id": "u-1", "X-User-Roles": "operator"}
+DEVICES = BASE_DIR / "data" / "devices.json"
+KNOWLEDGE = BASE_DIR / "data" / "knowledge"
 
-# Synthetic thresholds for tests only; they are not plant values.
-TEST_THRESHOLDS = MetricThresholds(warn_high=50.0, alarm_high=80.0)
-
-
-def make_points(start: datetime, values: list[float | None], step_s: int = 60
-                ) -> list[TelemetryPoint]:
-    return [TelemetryPoint(timestamp=start + timedelta(seconds=i * step_s), value=v)
-            for i, v in enumerate(values)]
-
-
-_PROVIDER_KEYS = ("DEEPSEEK_API", "DEEPSEEK_API_KEY", "GLM_API_KEY", "ZHIPU_API_KEY",
-                  "LLM_API_KEY", "EMBEDDING_API_KEY", "LLM_PROVIDER", "EMBEDDING_PROVIDER")
+_KEYS = ("DEEPSEEK_API", "DEEPSEEK_API_KEY", "GLM_API_KEY", "ZHIPU_API_KEY", "LLM_API_KEY",
+         "EMBEDDING_API_KEY", "LLM_PROVIDER", "EMBEDDING_PROVIDER", "OPENGAUSS_DSN",
+         "MILVUS_URI", "API_KEY")
 
 
 @pytest.fixture(autouse=True)
-def _isolate_from_real_api_keys(request, monkeypatch):
-    """Unit tests must not depend on (or use) keys present on the developer's machine."""
-    if request.module.__name__.endswith("test_live_providers"):
+def _isolate_env(request, monkeypatch):
+    """Tests never pick up keys or servers configured on the developer's machine."""
+    if request.module.__name__.endswith("test_live"):
         return
-    for name in _PROVIDER_KEYS:
-        monkeypatch.delenv(name, raising=False)
+    for k in _KEYS:
+        monkeypatch.delenv(k, raising=False)
 
 
 @pytest.fixture
-def anyio_backend() -> str:
+def anyio_backend():
     return "asyncio"
 
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(_env_file=None, compute_service_token=SecretStr(TOKEN),
-                    timeseries_backend="memory", llm_provider="none",
-                    sse_heartbeat_seconds=0.05, consecutive_breach_count=3)
+    return Settings(_env_file=None, timeseries_backend="memory", devices_file=DEVICES)
+
+
+@pytest.fixture(scope="session")
+def catalog() -> DeviceCatalog:
+    return DeviceCatalog.load(DEVICES)
 
 
 @pytest.fixture
-def catalog() -> StaticEquipmentCatalog:
-    return StaticEquipmentCatalog([
-        Equipment(equipment_id="ROOM-OK", site_id="S1", name="room ok", category="isolation_room",
-                  metrics=[MetricDefinition(name="m1", thresholds=TEST_THRESHOLDS)]),
-        Equipment(equipment_id="ROOM-HOT", site_id="S1", name="room hot",
-                  category="isolation_room",
-                  metrics=[MetricDefinition(name="m1", thresholds=TEST_THRESHOLDS)]),
-        Equipment(equipment_id="ROOM-NOLIMIT", site_id="S1", name="room no limit",
-                  category="isolation_room",
-                  metrics=[MetricDefinition(name="radiation_dose_rate", thresholds=None)]),
-        Equipment(equipment_id="BKP-1", site_id="S1", name="backup", category="backup_power",
-                  metrics=[MetricDefinition(name="m1", thresholds=TEST_THRESHOLDS)]),
-    ])
+async def store(catalog) -> MemoryTimeSeries:
+    """48 h of simulated data for the 7 sample devices."""
+    ts = MemoryTimeSeries()
+    now = datetime.now(UTC)
+    source = SimulatedSource(catalog.all(), backfill_hours=48, realtime=False, seed=42,
+                             clock=lambda: now)
+    await Pipeline(source, SimulatorFormat(), ts, batch_size=5000).run()
+    return ts
+
+
+class FakeEmbeddings(Embeddings):
+    """Character n-gram hashing; texts sharing words get similar vectors."""
+
+    def __init__(self, dimensions: int = 128, model: str = "fake-glm") -> None:
+        self.dimensions, self.model = dimensions, model
+        self.calls = 0
+
+    @property
+    def spec(self) -> dict:
+        return {"model": self.model, "dimensions": self.dimensions}
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        self.calls += 1
+        out = []
+        for t in texts:
+            v = [0.0] * self.dimensions
+            for g in list(t) + [t[i:i + 2] for i in range(len(t) - 1)]:
+                if g.strip():
+                    v[int(hashlib.md5(g.encode()).hexdigest(), 16) % self.dimensions] += 1
+            n = math.sqrt(sum(x * x for x in v)) or 1
+            out.append([x / n for x in v])
+        return out
+
+    def embed_query(self, text: str) -> list[float]:
+        return self.embed_documents([text])[0]
+
+
+def tool_call(name: str, args: dict, call_id: str = "call_1") -> AIMessage:
+    return AIMessage(content="", tool_calls=[{"name": name, "args": args, "id": call_id}])
+
+
+class FakeChatModel(BaseChatModel):
+    """Scripted chat model usable inside LangGraph (supports bind_tools and streaming)."""
+
+    responses: list = []
+    calls: list = []
+    tools_bound: bool = False
+
+    @property
+    def _llm_type(self) -> str:
+        return "fake"
+
+    def bind_tools(self, tools, **kwargs):
+        return self.model_copy(update={"tools_bound": True})  # shares responses/calls
+
+    def _next(self, messages) -> AIMessage:
+        self.calls.append({"messages": messages, "tools": self.tools_bound})
+        msg = self.responses.pop(0) if self.responses else AIMessage(content="(no more)")
+        return msg.model_copy(update={"usage_metadata": {"input_tokens": 10,
+                                                         "output_tokens": 5,
+                                                         "total_tokens": 15}})
+
+    def _generate(self, messages, stop=None, run_manager=None, **kw) -> ChatResult:
+        return ChatResult(generations=[ChatGeneration(message=self._next(messages))])
+
+    def _stream(self, messages, stop=None, run_manager=None, **kw):
+        msg = self._next(messages)
+        if msg.tool_calls:
+            yield ChatGenerationChunk(message=AIMessageChunk(content="", tool_call_chunks=[
+                {"name": c["name"], "args": json.dumps(c["args"], ensure_ascii=False),
+                 "id": c["id"], "index": i} for i, c in enumerate(msg.tool_calls)],
+                usage_metadata=msg.usage_metadata))
+            return
+        text = msg.content
+        step = max(1, len(text) // 3)
+        for i in range(0, len(text), step):
+            chunk = ChatGenerationChunk(message=AIMessageChunk(content=text[i:i + step]))
+            if run_manager:
+                run_manager.on_llm_new_token(chunk.text, chunk=chunk)
+            yield chunk
+        yield ChatGenerationChunk(message=AIMessageChunk(content="",
+                                                         usage_metadata=msg.usage_metadata))
 
 
 @pytest.fixture
-def timeseries() -> InMemoryTimeSeriesStore:
-    store = InMemoryTimeSeriesStore()
-    start = datetime.now(UTC) - timedelta(hours=1)
-    store.insert("S1", "ROOM-OK", "m1", make_points(start, [10, 12, 11, 13]))
-    store.insert("S1", "ROOM-HOT", "m1", make_points(start, [10, 85, 90, 95, 20]))
-    store.insert("S1", "ROOM-NOLIMIT", "radiation_dose_rate", make_points(start, [1.0, 1.1]))
-    # BKP-1 has no data at all.
-    return store
+def make_client(settings, catalog, store):
+    created = []
+
+    async def make(responses: list | None = None, retriever=None, chat_store=None):
+        llm = FakeChatModel(responses=list(responses), calls=[]) if responses is not None \
+            else None
+        resources = build_resources(settings, timeseries=store, catalog=catalog, llm=llm,
+                                    retriever=retriever, chat_store=chat_store or
+                                    MemoryChatStore())
+        app = create_app(settings, resources)
+        app.state.resources = resources
+        client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                   base_url="http://t/api/v1")
+        created.append(client)
+        return client, llm
+
+    yield make
 
 
-@pytest.fixture
-def container(settings, catalog, timeseries) -> Container:
-    return build_container(settings, catalog=catalog, timeseries=timeseries)
-
-
-@pytest.fixture
-async def client(container) -> AsyncIterator[httpx.AsyncClient]:
-    app = create_app(container=container)
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
-        yield c
-    await container.aclose()
+def parse_sse(text: str) -> list[tuple[str, dict]]:
+    events = []
+    for block in text.strip().split("\n\n"):
+        lines = dict(line.split(": ", 1) for line in block.splitlines() if ": " in line)
+        if "event" in lines:
+            events.append((lines["event"], json.loads(lines["data"])))
+    return events
