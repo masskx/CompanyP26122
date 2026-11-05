@@ -31,6 +31,9 @@ async def ready(c: Container = Depends(get_container)) -> JSONResponse:
                           "persistent": s.session_store_backend != "memory"},
         "llm": {"provider": s.llm_provider,
                 "status": "not_configured" if s.llm_provider == "none" else "configured_unchecked"},
+        "collector": ({"mode": "embedded", "source": s.collector_source,
+                       **c.collector.stats.snapshot()}
+                      if c.collector is not None else {"mode": "external"}),
         "vector_db": {"status": "not_configured"},
         "embedding": {"status": "not_configured"},
         "rerank": {"status": "not_configured"},

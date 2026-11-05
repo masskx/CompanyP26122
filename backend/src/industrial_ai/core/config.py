@@ -30,6 +30,41 @@ class Settings(BaseSettings):
     iotdb_pool_size: int = Field(default=4, ge=1)
     iotdb_wait_timeout_ms: int = Field(default=3000, ge=1)
 
+    # ---- Collector: source -> parser -> validator -> IoTDB ----
+    # simulator: synthetic radiation dose-rate data (development/testing)
+    # mqtt:      subscribe to the broker (real devices, or `collector publish-sim`)
+    collector_source: Literal["simulator", "mqtt"] = "simulator"
+    # Wire-format parser; add the real format to collector.parser.PARSERS when known.
+    collector_parser: str = "provisional_json"
+    collector_topic_prefix: str = "sim/radiation"
+    collector_batch_size: int = Field(default=500, ge=1)
+    collector_flush_seconds: float = Field(default=1.0, gt=0)
+    collector_queue_size: int = Field(default=10_000, ge=1)
+    collector_max_buffer: int = Field(default=100_000, ge=1)
+    collector_max_future_skew_seconds: float = Field(default=300, ge=0)
+    collector_max_age_hours: float | None = Field(default=None, gt=0)
+    collector_reject_unknown_equipment: bool = True
+    # Run the collector inside the API process (local development, e.g. with the memory
+    # backend). In deployment the collector runs as its own process.
+    api_embedded_collector: bool = False
+
+    simulator_scenario_path: Path | None = None
+    simulator_backfill_hours: float = Field(default=48, ge=0)
+    simulator_realtime: bool = True
+    simulator_seed: int | None = 42
+
+    mqtt_host: str = "127.0.0.1"
+    mqtt_port: int = 1883
+    mqtt_topics: list[str] = Field(default_factory=lambda: ["sim/radiation/#"])
+    mqtt_qos: int = Field(default=1, ge=0, le=2)
+    mqtt_client_id: str | None = None
+    mqtt_username: str | None = None
+    mqtt_password: SecretStr | None = None
+    mqtt_keepalive: int = Field(default=60, ge=1)
+    mqtt_tls: bool = False
+    mqtt_ca_file: Path | None = None
+    mqtt_persistent_session: bool = False
+
     # Relational storage for analysis results and assistant sessions is not finalised.
     analysis_store_backend: Literal["memory"] = "memory"
     session_store_backend: Literal["memory"] = "memory"

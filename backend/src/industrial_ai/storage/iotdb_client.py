@@ -1,7 +1,7 @@
 """Apache IoTDB adapter for `TimeSeriesStore` (tree model).
 
-IoTDB is a candidate, not a final choice; this adapter is only loaded when
-TIMESERIES_BACKEND=iotdb. Install with `pip install -e ".[iotdb]"`.
+Used when TIMESERIES_BACKEND=iotdb (the default). Writes go through
+`industrial_ai.collector.writer.IoTDBWriter`, using the same path convention.
 
 Path convention (to be agreed with whoever writes the data):
     <root>.<site_id>.<equipment_id>.<metric>   e.g. root.mes.`AS01`.`AS01-ROOM-01`.`temperature`
@@ -14,10 +14,13 @@ import math
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from industrial_ai.schemas.common import TelemetryPoint, TimeRange
 from industrial_ai.storage.base import StorageUnavailableError
+
+if TYPE_CHECKING:
+    from industrial_ai.core.config import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +68,20 @@ def _to_float(field: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def pool_factory_from_settings(settings: "Settings") -> Callable[[], Any]:
+    """Lazily create a SessionPool (no connection is made until first use)."""
+
+    def factory() -> Any:
+        from iotdb.SessionPool import PoolConfig, SessionPool
+
+        password = settings.iotdb_password.get_secret_value() if settings.iotdb_password else None
+        config = PoolConfig(host=settings.iotdb_host, port=str(settings.iotdb_port),
+                            user_name=settings.iotdb_user, password=password)
+        return SessionPool(config, settings.iotdb_pool_size, settings.iotdb_wait_timeout_ms)
+
+    return factory
+
+
 class IoTDBTimeSeriesStore:
     def __init__(self, pool_factory: Callable[[], Any], *, root_path: str) -> None:
         self._pool_factory = pool_factory
@@ -72,21 +89,8 @@ class IoTDBTimeSeriesStore:
         self._root = root_path
 
     @classmethod
-    def from_settings(
-        cls, *, host: str, port: int, user: str, password: str | None, root_path: str,
-        pool_size: int, wait_timeout_ms: int,
-    ) -> "IoTDBTimeSeriesStore":
-        def factory() -> Any:
-            try:
-                from iotdb.SessionPool import PoolConfig, SessionPool
-            except ImportError as exc:  # pragma: no cover - depends on optional extra
-                raise StorageUnavailableError(
-                    "apache-iotdb is not installed; install the [iotdb] extra"
-                ) from exc
-            config = PoolConfig(host=host, port=str(port), user_name=user, password=password)
-            return SessionPool(config, pool_size, wait_timeout_ms)
-
-        return cls(factory, root_path=root_path)
+    def from_settings(cls, settings: "Settings") -> "IoTDBTimeSeriesStore":
+        return cls(pool_factory_from_settings(settings), root_path=settings.iotdb_root_path)
 
     def _get_pool(self) -> Any:
         if self._pool is None:

@@ -17,8 +17,14 @@ dependencies = [
     "apache-iotdb>=2.0",
 ]
 
+[project.scripts]
+industrial-ai-collector = "industrial_ai.collector.main:main"
+
 [project.optional-dependencies]
+# MQTT subscription (COLLECTOR_SOURCE=mqtt) and `industrial-ai-collector publish-sim`.
+mqtt = ["aiomqtt>=2.3"]
 dev = [
+    "aiomqtt>=2.3",
     "pytest>=8.0",
     "anyio>=4.4",
     "ruff>=0.5",

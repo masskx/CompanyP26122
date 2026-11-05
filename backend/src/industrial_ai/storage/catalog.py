@@ -26,6 +26,7 @@ class StaticEquipmentCatalog:
     @classmethod
     def from_file(cls, path: Path) -> "StaticEquipmentCatalog":
         raw = json.loads(path.read_text(encoding="utf-8"))
+        # A simulation scenario file is also a valid catalog (it has an "equipment" list).
         return cls(_EQUIPMENT_LIST.validate_python(raw.get("equipment", [])))
 
     async def list_equipment(self, site_id: str, category: str | None = None) -> list[Equipment]:
@@ -33,6 +34,9 @@ class StaticEquipmentCatalog:
             e for (s, _), e in sorted(self._items.items())
             if s == site_id and (category is None or e.category == category)
         ]
+
+    def keys(self) -> set[tuple[str, str]]:
+        return set(self._items)
 
     async def get(self, site_id: str, equipment_id: str) -> Equipment | None:
         return self._items.get((site_id, equipment_id))

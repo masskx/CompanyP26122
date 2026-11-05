@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from fastapi import Request
 
 from industrial_ai.analytics.rules import RuleConfig
+from industrial_ai.collector.pipeline import IngestionPipeline
 from industrial_ai.core.config import Settings
 from industrial_ai.integrations.llm_client import LLMClient, LLMConfig
 from industrial_ai.services.assistant_service import AssistantService
@@ -41,6 +42,7 @@ class Container:
     maintenance: MaintenanceService
     assistant: AssistantService
     llm: LLMClient | None = None
+    collector: IngestionPipeline | None = None  # only when embedded in the API process
 
     async def aclose(self) -> None:
         await self.runner.shutdown()
@@ -53,12 +55,7 @@ def build_timeseries(settings: Settings) -> TimeSeriesStore:
     if settings.timeseries_backend == "iotdb":
         from industrial_ai.storage.iotdb_client import IoTDBTimeSeriesStore
 
-        password = settings.iotdb_password.get_secret_value() if settings.iotdb_password else None
-        return IoTDBTimeSeriesStore.from_settings(
-            host=settings.iotdb_host, port=settings.iotdb_port, user=settings.iotdb_user,
-            password=password, root_path=settings.iotdb_root_path,
-            pool_size=settings.iotdb_pool_size, wait_timeout_ms=settings.iotdb_wait_timeout_ms,
-        )
+        return IoTDBTimeSeriesStore.from_settings(settings)
     return InMemoryTimeSeriesStore()
 
 
