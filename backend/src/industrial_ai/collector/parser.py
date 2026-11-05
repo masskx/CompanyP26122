@@ -1,17 +1,28 @@
 """Wire-format parsers.
 
-The real MQTT topic layout and payload schema are not known yet. `ProvisionalJsonCodec` is
-the format the simulator speaks; when the real contract arrives, add a new parser class,
-register it in PARSERS and set COLLECTOR_PARSER. Nothing downstream changes.
+The real MQTT topic layout and payload schema are not known yet. Options when it arrives:
+
+* COLLECTOR_PARSER=mapping + COLLECTOR_PARSER_CONFIG=<file.json>: describe the real format
+  (topic pattern, JSON field paths, device mapping, units) without writing code
+  (see collector/mapping_parser.py and examples/mqtt/mapping.example.json).
+* COLLECTOR_PARSER=your_module:YourParser: a class taking `settings` with a
+  `parse(RawMessage) -> list[Measurement]` method, loaded from your own module.
+
+`ProvisionalJsonCodec` is the format the simulator speaks. Nothing downstream of the parser
+(validation, batching, IoTDB layout, API, agent) changes when the parser changes.
 """
 
+import importlib
 import json
 import math
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from industrial_ai.collector.models import Measurement, RawMessage, RejectedMessage
+
+if TYPE_CHECKING:
+    from industrial_ai.core.config import Settings
 
 CANONICAL_DOSE_RATE_UNIT = "µSv/h"
 
@@ -123,15 +134,30 @@ class ProvisionalJsonCodec:
         )]
 
 
-ParserFactory = Callable[[str], MessageParser]
+ParserFactory = Callable[["Settings"], MessageParser]
+
+
+def _mapping(settings: "Settings") -> MessageParser:
+    from industrial_ai.collector.mapping_parser import MappingParser
+
+    if settings.collector_parser_config is None:
+        raise ValueError("COLLECTOR_PARSER=mapping requires COLLECTOR_PARSER_CONFIG")
+    return MappingParser.from_file(settings.collector_parser_config)
+
 
 PARSERS: dict[str, ParserFactory] = {
-    "provisional_json": ProvisionalJsonCodec,
+    "provisional_json": lambda s: ProvisionalJsonCodec(s.collector_topic_prefix),
+    "mapping": _mapping,
 }
 
 
-def build_parser(name: str, topic_prefix: str) -> MessageParser:
-    try:
-        return PARSERS[name](topic_prefix)
-    except KeyError as exc:
-        raise ValueError(f"unknown parser {name!r}; available: {sorted(PARSERS)}") from exc
+def build_parser(settings: "Settings") -> MessageParser:
+    """Resolve COLLECTOR_PARSER: a registered name, or "package.module:ClassName"."""
+    name = settings.collector_parser
+    if name in PARSERS:
+        return PARSERS[name](settings)
+    if ":" in name:
+        module_name, _, attr = name.partition(":")
+        factory = getattr(importlib.import_module(module_name), attr)
+        return factory(settings)
+    raise ValueError(f"unknown parser {name!r}; use one of {sorted(PARSERS)} or 'module:Class'")

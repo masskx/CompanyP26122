@@ -26,6 +26,19 @@ def make_points(start: datetime, values: list[float | None], step_s: int = 60
             for i, v in enumerate(values)]
 
 
+_PROVIDER_KEYS = ("DEEPSEEK_API", "DEEPSEEK_API_KEY", "GLM_API_KEY", "ZHIPU_API_KEY",
+                  "LLM_API_KEY", "EMBEDDING_API_KEY", "LLM_PROVIDER", "EMBEDDING_PROVIDER")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_from_real_api_keys(request, monkeypatch):
+    """Unit tests must not depend on (or use) keys present on the developer's machine."""
+    if request.module.__name__.endswith("test_live_providers"):
+        return
+    for name in _PROVIDER_KEYS:
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"

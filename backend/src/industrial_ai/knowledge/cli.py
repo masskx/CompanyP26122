@@ -13,13 +13,13 @@ build and queries share one embedding configuration.
 """
 
 import argparse
-import asyncio
 import json
 import sys
 from pathlib import Path
 
 from industrial_ai.core.config import Settings
 from industrial_ai.core.logging import configure_logging
+from industrial_ai.core.runtime import run_async
 from industrial_ai.integrations.embedding_client import EmbeddingClient, EmbeddingConfig
 from industrial_ai.knowledge.builder import build_knowledge_base
 from industrial_ai.knowledge.manifest import sha256_file
@@ -131,7 +131,7 @@ def main(argv: list[str] | None = None) -> None:
     settings = Settings()
     configure_logging(settings.log_level, settings.app_env, stream=sys.stderr)
     try:
-        asyncio.run(_main(args, settings))
+        run_async(_main(args, settings))
     except (ValueError, RuntimeError) as exc:
         sys.exit(f"error: {exc}")
 

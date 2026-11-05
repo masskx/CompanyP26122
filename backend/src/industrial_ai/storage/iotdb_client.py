@@ -76,10 +76,95 @@ def pool_factory_from_settings(settings: "Settings") -> Callable[[], Any]:
 
         password = settings.iotdb_password.get_secret_value() if settings.iotdb_password else None
         config = PoolConfig(host=settings.iotdb_host, port=str(settings.iotdb_port),
-                            user_name=settings.iotdb_user, password=password)
+                            user_name=settings.iotdb_user, password=password,
+                            enable_redirection=settings.iotdb_enable_redirection)
         return SessionPool(config, settings.iotdb_pool_size, settings.iotdb_wait_timeout_ms)
 
     return factory
+
+
+def ensure_schema(settings: "Settings", series: list[tuple[str, str, str]]) -> dict[str, int]:
+    """Create the database and DOUBLE time series for (site_id, equipment_id, metric).
+
+    Idempotent. Needed when the server disables automatic schema creation; harmless
+    otherwise. Returns counts of created / existing series.
+    """
+    pool = pool_factory_from_settings(settings)()
+    session = pool.get_session()
+    created = existing = 0
+    try:
+        try:
+            session.execute_non_query_statement(f"CREATE DATABASE {settings.iotdb_root_path}")
+        except Exception as exc:  # already exists
+            if "already" not in str(exc).lower():
+                raise
+        for site_id, equipment_id, metric in series:
+            path = f"{device_path(settings.iotdb_root_path, site_id, equipment_id)}." \
+                   f"{quote_node(metric)}"
+            try:
+                session.execute_non_query_statement(
+                    f"CREATE TIMESERIES {path} WITH DATATYPE=DOUBLE, ENCODING=GORILLA, "
+                    "COMPRESSOR=LZ4")
+                created += 1
+            except Exception as exc:
+                if "already" not in str(exc).lower():
+                    raise
+                existing += 1
+    finally:
+        pool.put_back(session)
+        pool.close()
+    return {"created": created, "existing": existing}
+
+
+def delete_series(settings: "Settings", series: list[tuple[str, str, str]]) -> int:
+    """Delete the given time series (data and schema). Returns how many were deleted."""
+    pool = pool_factory_from_settings(settings)()
+    session = pool.get_session()
+    deleted = 0
+    try:
+        for site_id, equipment_id, metric in series:
+            path = f"{device_path(settings.iotdb_root_path, site_id, equipment_id)}." \
+                   f"{quote_node(metric)}"
+            try:
+                session.execute_non_query_statement(f"DELETE TIMESERIES {path}")
+                deleted += 1
+            except Exception as exc:
+                if "not" not in str(exc).lower():  # "does not exist" / "not matched"
+                    raise
+    finally:
+        pool.put_back(session)
+        pool.close()
+    return deleted
+
+
+def count_points(settings: "Settings", site_id: str, equipment_id: str, metric: str
+                 ) -> tuple[int, int | None]:
+    """(number of points, latest timestamp in ms) for one series; (0, None) if absent."""
+    pool = pool_factory_from_settings(settings)()
+    session = pool.get_session()
+    try:
+        device = device_path(settings.iotdb_root_path, site_id, equipment_id)
+        column = quote_node(metric)
+        ds = session.execute_query_statement(f"SELECT count({column}) FROM {device}")
+        count = 0
+        if ds.has_next():
+            field = ds.next().get_fields()[0]
+            count = 0 if field.is_null() else int(field.get_object_value(field.get_data_type()))
+        ds.close_operation_handle()
+        latest = None
+        ds = session.execute_query_statement(
+            f"SELECT {column} FROM {device} ORDER BY time DESC LIMIT 1")
+        if ds.has_next():
+            latest = ds.next().get_timestamp()
+        ds.close_operation_handle()
+        return count, latest
+    except Exception as exc:
+        if "does not exist" in str(exc).lower() or "not exist" in str(exc).lower():
+            return 0, None
+        raise
+    finally:
+        pool.put_back(session)
+        pool.close()
 
 
 class IoTDBTimeSeriesStore:

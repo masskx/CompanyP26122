@@ -124,7 +124,13 @@ class MilvusKnowledgeStore:
     # ---- alias ------------------------------------------------------------------------
 
     def active_version(self) -> str | None:
+        # Check the alias list first: describe_alias on a missing alias makes pymilvus log a
+        # full traceback at ERROR level, which looks like a failure on a fresh install.
         try:
+            listed = self.client.list_aliases()
+            aliases = listed.get("aliases", []) if isinstance(listed, dict) else listed
+            if self.alias not in aliases:
+                return None
             info = self.client.describe_alias(self.alias)
         except MilvusException:
             return None

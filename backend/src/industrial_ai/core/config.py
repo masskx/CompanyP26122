@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     iotdb_root_path: str = "root.mes"
     iotdb_pool_size: int = Field(default=4, ge=1)
     iotdb_wait_timeout_ms: int = Field(default=3000, ge=1)
+    # Redirection only helps multi-node clusters; off avoids clients being redirected to a
+    # container-internal hostname they cannot resolve.
+    iotdb_enable_redirection: bool = False
 
     # ---- Collector: source -> parser -> validator -> IoTDB ----
     # simulator: synthetic radiation dose-rate data (development/testing)
@@ -56,6 +59,8 @@ class Settings(BaseSettings):
     collector_source: Literal["simulator", "mqtt"] = "simulator"
     # Wire-format parser; add the real format to collector.parser.PARSERS when known.
     collector_parser: str = "provisional_json"
+    # JSON mapping file for COLLECTOR_PARSER=mapping (see examples/mqtt/mapping.example.json).
+    collector_parser_config: Path | None = None
     collector_topic_prefix: str = "sim/radiation"
     collector_batch_size: int = Field(default=500, ge=1)
     collector_flush_seconds: float = Field(default=1.0, gt=0)

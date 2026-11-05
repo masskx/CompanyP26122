@@ -79,6 +79,54 @@ async def migrate(dsn: str) -> list[str]:
     return applied
 
 
+async def bootstrap(admin_dsn: str, app_dsn: str) -> list[str]:
+    """Create the app user, database and schema described by `app_dsn`, using an admin login.
+
+    Idempotent. On openGauss the database is created with DBCOMPATIBILITY 'PG' and a schema
+    named after the user (default search_path "$user", public). Returns the actions taken.
+    """
+    from psycopg import sql
+    from psycopg.conninfo import conninfo_to_dict, make_conninfo
+
+    app = conninfo_to_dict(app_dsn)
+    user, password, dbname = app.get("user"), app.get("password"), app.get("dbname")
+    if not (user and password and dbname):
+        raise ValueError("OPENGAUSS_DSN must contain user, password and dbname")
+    actions: list[str] = []
+    async with await AsyncConnection.connect(admin_dsn, autocommit=True) as conn:
+        version = (await (await conn.execute("SELECT version()")).fetchone())[0]
+        is_opengauss = "openGauss" in version
+        if not await (await conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s",
+                                         (user,))).fetchone():
+            await conn.execute(sql.SQL("CREATE USER {} PASSWORD {}").format(
+                sql.Identifier(user), sql.Literal(password)))
+            actions.append(f"created user {user}")
+        if not await (await conn.execute("SELECT 1 FROM pg_database WHERE datname = %s",
+                                         (dbname,))).fetchone():
+            stmt = sql.SQL("CREATE DATABASE {} OWNER {}").format(sql.Identifier(dbname),
+                                                                  sql.Identifier(user))
+            if is_opengauss:
+                stmt = sql.SQL("CREATE DATABASE {} DBCOMPATIBILITY 'PG' OWNER {}").format(
+                    sql.Identifier(dbname), sql.Identifier(user))
+            await conn.execute(stmt)
+            actions.append(f"created database {dbname}")
+    async with await AsyncConnection.connect(make_conninfo(admin_dsn, dbname=dbname),
+                                             autocommit=True) as conn:
+        if not await (await conn.execute("SELECT 1 FROM pg_namespace WHERE nspname = %s",
+                                         (user,))).fetchone():
+            await conn.execute(sql.SQL("CREATE SCHEMA {} AUTHORIZATION {}").format(
+                sql.Identifier(user), sql.Identifier(user)))
+            actions.append(f"created schema {user}")
+    return actions
+
+
+async def applied_migrations(dsn: str) -> list[str]:
+    async with await AsyncConnection.connect(dsn) as conn:
+        rows = await (await conn.execute(
+            "SELECT version FROM schema_migrations ORDER BY version")).fetchall()
+    return [r[0] for r in rows]
+
+
 async def _compatibility(conn: AsyncConnection) -> str | None:
     """openGauss database compatibility mode, or None on PostgreSQL."""
     try:

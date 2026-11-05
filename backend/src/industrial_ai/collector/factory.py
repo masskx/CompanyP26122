@@ -84,7 +84,7 @@ def build_pipeline(
 ) -> IngestionPipeline:
     return IngestionPipeline(
         source or build_source(settings),
-        build_parser(settings.collector_parser, settings.collector_topic_prefix),
+        build_parser(settings),
         build_validator(settings),
         writer or build_writer(settings, memory_store),
         batch_size=settings.collector_batch_size,

@@ -1,0 +1,99 @@
+# Local development stack: IoTDB, Milvus, openGauss, Mosquitto.
+#
+#   docker compose -f deploy/docker-compose.yml up -d        # from backend/
+#   docker compose -f deploy/docker-compose.yml ps
+#   docker compose -f deploy/docker-compose.yml down         # keep data
+#   docker compose -f deploy/docker-compose.yml down -v      # delete all data
+#
+# Ports on the host match backend/.env.example. Passwords here are for local development
+# only. Images are multi-arch (amd64 / arm64). Already running your own instances? Skip this
+# file and point .env at them instead.
+
+name: industrial-ai
+
+services:
+  iotdb:
+    image: apache/iotdb:2.0.11-standalone
+    container_name: industrial-ai-iotdb
+    hostname: iotdb
+    ports:
+      - "6667:6667"
+    environment:
+      - cn_internal_address=iotdb
+      - cn_internal_port=10710
+      - cn_consensus_port=10720
+      - cn_seed_config_node=iotdb:10710
+      - dn_rpc_address=0.0.0.0
+      - dn_internal_address=iotdb
+      - dn_rpc_port=6667
+      - dn_internal_port=10730
+      - dn_mpp_data_exchange_port=10740
+      - dn_schema_region_consensus_port=10750
+      - dn_data_region_consensus_port=10760
+      - dn_seed_config_node=iotdb:10710
+    volumes:
+      - iotdb-data:/iotdb/data
+      - iotdb-logs:/iotdb/logs
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/6667'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+
+  milvus:
+    image: milvusdb/milvus:v2.6.26
+    container_name: industrial-ai-milvus
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      ETCD_USE_EMBED: "true"
+      ETCD_DATA_DIR: /var/lib/milvus/etcd
+      ETCD_CONFIG_PATH: /milvus/configs/embedEtcd.yaml
+      COMMON_STORAGETYPE: local
+      DEPLOY_MODE: STANDALONE
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    volumes:
+      - milvus-data:/var/lib/milvus
+      - ./milvus/embedEtcd.yaml:/milvus/configs/embedEtcd.yaml:ro
+      - ./milvus/user.yaml:/milvus/configs/user.yaml:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+    restart: unless-stopped
+
+  opengauss:
+    image: opengauss/opengauss-server:7.0.0-RC3.B025
+    container_name: industrial-ai-opengauss
+    privileged: true
+    environment:
+      # Admin password for the default admin user "gaussdb" (complexity rules apply:
+      # upper + lower case, digit, special character, >= 8 chars).
+      GS_PASSWORD: "Gauss@Local2026"
+    ports:
+      - "15432:5432"
+    volumes:
+      - opengauss-data:/var/lib/opengauss
+    restart: unless-stopped
+
+  mosquitto:
+    image: eclipse-mosquitto:2.0.22
+    container_name: industrial-ai-mosquitto
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    restart: unless-stopped
+
+volumes:
+  iotdb-data:
+  iotdb-logs:
+  milvus-data:
+  opengauss-data:

@@ -1,7 +1,9 @@
 """Measurement sinks."""
 
 import asyncio
+import json
 import logging
+import sys
 from collections.abc import Callable
 from typing import Any, Protocol
 
@@ -22,6 +24,26 @@ class MeasurementWriter(Protocol):
         ...
 
     async def close(self) -> None: ...
+
+
+class StdoutWriter:
+    """Dry run: print what would be stored (one JSON object per measurement)."""
+
+    def __init__(self, stream=None) -> None:
+        self._stream = stream or sys.stdout
+        self.count = 0
+
+    async def write(self, batch: list[Measurement]) -> None:
+        for m in batch:
+            self._stream.write(json.dumps({
+                "site_id": m.site_id, "equipment_id": m.equipment_id, "metric": m.metric,
+                "timestamp": m.timestamp.isoformat(), "value": m.value}, ensure_ascii=False)
+                + "\n")
+        self._stream.flush()
+        self.count += len(batch)
+
+    async def close(self) -> None:
+        return None
 
 
 class InMemoryWriter:

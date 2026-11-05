@@ -82,20 +82,32 @@ class IngestionPipeline:
     def _accept(self, message: RawMessage) -> None:
         self.stats.received += 1
         try:
-            measurements = self._parser.parse(message)
-            for m in measurements:
-                self._validator.check(m)
+            parsed = self._parser.parse(message)
         except RejectedMessage as exc:
-            self.stats.rejected[exc.reason] += 1
-            if sum(self.stats.rejected.values()) <= 20:  # sample, avoid log floods
-                logger.warning("message rejected", extra={"fields": {
-                    "reason": exc.reason, "detail": exc.detail, "topic": message.topic[:128]}})
+            self._reject(exc, message)
             return
+        finally:
+            drain = getattr(self._parser, "drain_rejections", None)
+            if drain is not None:
+                self.stats.rejected.update(drain())
+        measurements = []
+        for m in parsed:  # validate per measurement: keep the good ones
+            try:
+                self._validator.check(m)
+                measurements.append(m)
+            except RejectedMessage as exc:
+                self._reject(exc, message)
         self._buffer.extend(measurements)
         overflow = len(self._buffer) - self._max_buffer
         if overflow > 0:
             del self._buffer[:overflow]
             self.stats.dropped += overflow
+
+    def _reject(self, exc: RejectedMessage, message: RawMessage) -> None:
+        self.stats.rejected[exc.reason] += 1
+        if sum(self.stats.rejected.values()) <= 20:  # sample, avoid log floods
+            logger.warning("message rejected", extra={"fields": {
+                "reason": exc.reason, "detail": exc.detail, "topic": message.topic[:128]}})
 
     async def _flush(self) -> None:
         backoff = 1.0

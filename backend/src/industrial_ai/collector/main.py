@@ -7,21 +7,19 @@ Configuration comes from environment variables / .env (see .env.example).
 """
 
 import argparse
-import asyncio
-import contextlib
 import logging
-import signal
 
 from industrial_ai.collector.factory import build_pipeline, build_simulated_source, mqtt_config
 from industrial_ai.collector.models import RawMessage
 from industrial_ai.collector.sources.mqtt import MqttPublisher
 from industrial_ai.core.config import Settings
 from industrial_ai.core.logging import configure_logging
+from industrial_ai.core.runtime import run_async, run_until_stopped
 
 logger = logging.getLogger("industrial_ai.collector")
 
 
-async def _run(settings: Settings) -> None:
+async def run_pipeline(settings: Settings) -> None:
     pipeline = build_pipeline(settings)
     try:
         await pipeline.run()
@@ -29,7 +27,8 @@ async def _run(settings: Settings) -> None:
         await pipeline.close()
 
 
-async def _publish_sim(settings: Settings) -> None:
+async def publish_simulation(settings: Settings) -> None:
+    """Simulator -> MQTT broker: stands in for the real devices."""
     source = build_simulated_source(settings)
     published = 0
     async with MqttPublisher(mqtt_config(settings)) as publisher:
@@ -51,18 +50,8 @@ def main(argv: list[str] | None = None) -> None:
 
     settings = Settings()
     configure_logging(settings.log_level, settings.app_env)
-    coro = _run(settings) if args.command == "run" else _publish_sim(settings)
-
-    async def runner() -> None:
-        task = asyncio.create_task(coro)
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            with contextlib.suppress(NotImplementedError):  # Windows
-                loop.add_signal_handler(sig, task.cancel)
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-
-    asyncio.run(runner())
+    coro = run_pipeline(settings) if args.command == "run" else publish_simulation(settings)
+    run_async(run_until_stopped(coro))
 
 
 if __name__ == "__main__":

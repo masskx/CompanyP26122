@@ -1,247 +1,714 @@
-# 算力服内部 API（FastAPI）
+# industrial-ai backend — local setup guide
 
-实现 [设计文档](../docs/项目规划/设计文档.md) §4 中算力服与 MES 主后端之间的内部接口。只接受主后端调用；用户鉴权、权限和用户端通信由其他团队负责。
+FastAPI backend for the nuclear-plant MES workstation: equipment health and predictive
+maintenance over radiation dose-rate data, and an AI assistant that decides on its own when
+to query equipment data (Apache IoTDB) or search the technical knowledge base (Milvus), with
+conversations stored in openGauss.
 
-## 当前状态
+This guide takes you from a fresh download to a fully working system on your own machine,
+using **simulated** dose-rate data, and explains how to switch to the **real MQTT feed**
+later without touching the API, the IoTDB layout or the agent.
 
-| 能力 | 状态 |
-| --- | --- |
-| 服务令牌认证、请求 ID、结构化日志、统一错误格式 | 已实现 |
-| 数据采集：模拟数据 / MQTT 订阅 → 解析 → 校验 → 批量写入 IoTDB | 已实现（真实 MQTT 报文格式待定，当前使用临时格式） |
-| `GET /internal/v1/equipment/health` 健康概览 | 已实现（确定性规则） |
-| 维护分析创建 / 查询 / SSE 事件流 / `Last-Event-ID` 断线恢复 / `Idempotency-Key` | 已实现（确定性规则 + 可选模型说明） |
-| 大模型接入（DeepSeek API 测试 / 本地 vLLM 生产，OpenAI 兼容接口） | 已实现：维护分析说明、智能助手 |
-| 智能助手：模型自主决定是否检索知识库 / 查询设备数据，流式回答，带引用 | 已实现 |
-| 知识库：离线构建脚本（GLM embedding → Milvus），版本化、原子切换、回滚 | 已实现 |
-| 会话持久化（openGauss）：用户、会话、消息、引用、反馈 | 已实现 |
-| 用户身份：可信网关头 / JWT 断言 / 开发模式，会话按用户隔离 | 已实现（真实认证待客户端接入） |
-| `/health/live`、`/health/ready`、`/health/model` | 已实现 |
-| rerank、维护分析结果持久化、结果回写 MES | 未实现 |
+> 中文架构与运维参考：[docs/architecture.zh-CN.md](docs/architecture.zh-CN.md)
 
-## 存储
+---
 
-各类存储都通过 `storage/base.py` 中的接口访问，业务代码不依赖具体产品，选型确定后只需新增实现：
+## Contents
 
-| 数据 | 接口 | 当前实现 | 状态 |
-| --- | --- | --- | --- |
-| 设备时序数据 | `TimeSeriesStore` | `iotdb`（默认）、`memory`（仅测试） | 已确定：Apache IoTDB |
-| 助手用户、会话、消息、引用、反馈 | `ConversationStore` | `opengauss`、`memory`（仅测试） | 已确定：openGauss |
-| 知识切片与向量 | `MilvusKnowledgeStore` | Milvus 2.6（测试可用 Milvus Lite） | 已确定：Milvus |
-| 维护分析任务与事件 | `AnalysisStore` | `memory` | 重启后数据丢失，后续可迁入 openGauss |
-| 设备主数据 | `EquipmentCatalog` | JSON 文件 | 待 MES 主数据接口 |
+- [How the pieces fit together](#how-the-pieces-fit-together)
+- [Quick start (about 15 minutes)](#quick-start-about-15-minutes)
+- [1. Databases: configure, initialise, verify](#1-databases-configure-initialise-verify)
+- [2. FastAPI backend: install, configure, run, verify](#2-fastapi-backend-install-configure-run-verify)
+- [3. Simulated data for local testing](#3-simulated-data-for-local-testing)
+- [4. Switching to the real MQTT feed](#4-switching-to-the-real-mqtt-feed)
+- [5. Scripts and command-line tools](#5-scripts-and-command-line-tools)
+- [Testing](#testing)
+- [Troubleshooting](#troubleshooting)
+- [Before production](#before-production)
+- [Project layout](#project-layout)
 
-> IoTDB 是时序数据库，不是向量数据库。RAG 所需的向量库需要单独选型。
+---
 
-IoTDB 适配器使用树模型，路径约定（需与数据写入方确认）：`<IOTDB_ROOT_PATH>.<site_id>.<equipment_id>.<metric>`，时间戳按毫秒精度。算力服只需要只读账号。
-
-## 大模型
-
-DeepSeek API 与 vLLM 都提供 OpenAI 兼容的 `/chat/completions` 接口，切换只需修改配置，不改代码：
-
-| 阶段 | 配置 |
-| --- | --- |
-| 开发/测试 | `LLM_PROVIDER=deepseek`、`LLM_API_KEY=...`（默认 `https://api.deepseek.com`、`deepseek-chat`） |
-| 生产 | `LLM_PROVIDER=vllm`、`LLM_BASE_URL=http://127.0.0.1:8000/v1`、`LLM_MODEL=<served-model-name>`、`LLM_MODEL_PRECISION=W8A8` |
-| 不使用模型 | `LLM_PROVIDER=none`（默认，仅规则文本） |
-
-- **DeepSeek 是公网服务**：`APP_ENV=production` 时拒绝启动；测试阶段只能使用模拟或经批准脱敏的数据，不得发送真实电站数据。
-- 健康等级始终由规则决定。模型只改写风险说明和建议措辞，输出经 Schema 校验，且不得删除或降低规则建议的优先级、不得引用分析范围外的设备；校验失败重试一次，仍失败则保留规则文本，结果中 `model` 为 `null`。
-- vLLM 下默认关闭 Qwen3 思考模式（`LLM_ENABLE_THINKING=false`）；任何 `<think>` 内容都会被丢弃，不展示给用户。
-- 日志只记录耗时和 token 数，不记录提示词和模型输出。
-
-## 智能助手（Agent + RAG）
+## How the pieces fit together
 
 ```text
-客户端 → MES 主后端（鉴权）→ POST /internal/v1/assistant/chat（服务令牌 + 用户身份）
-          ↓
-  AgentRunner：模型带工具流式推理，自主决定是否调用
-     ├─ search_knowledge_base → 查询向量化（GLM，与建库同一模型/维度）→ Milvus 检索（按密级、角色过滤）
-     ├─ get_equipment_health  → IoTDB + 规则判定
-     └─ get_device_readings   → IoTDB 统计
-          ↓
-  回答流式返回（stage / delta / citation / result / error / done），用户消息与回答、引用写入 openGauss
+  simulated devices ──┐                         (scripts/simulate_data.py)
+  real devices (later)┤
+                      ▼
+                 MQTT broker ─────► ingestion: parse → validate → batch ─────► Apache IoTDB
+                                    (scripts/mqtt_ingest.py)                   root.mes.<site>.<equipment>.dose_rate
+                                                                                  │
+ MES main backend ──HTTPS──► FastAPI backend (scripts/run_api.py) ◄───────────────┘
+  (auth, users)              ├─ equipment health / maintenance analyses (rules)
+                             └─ AI assistant (agent) ──► tools: equipment data (IoTDB)
+                                    │                          knowledge search (Milvus ◄─ GLM embeddings)
+                                    ├─► LLM: DeepSeek API (dev) / local vLLM (prod)
+                                    └─► openGauss: users, sessions, messages, citations, feedback
+
+ Offline: technical documents ──► industrial-ai-kb build (GLM embeddings) ──► Milvus
 ```
 
-- **不对每个问题都检索**：知识检索是一个工具，由模型根据问题和上下文决定是否调用、用什么检索语句、检索几次；寒暄或已有依据的追问直接回答。最后一步不再提供工具，保证必有回答。
-- **证据与引用**：工具结果按全局编号 [1][2]… 提供给模型；回答中引用到的编号转为 `citation`（知识：文档、章节、页码、知识版本、相似度；数据：设备、时间范围）。检索无结果时模型被要求明确说明“未找到依据”。
-- **版本一致**：一次回答内第一次检索确定知识版本，后续检索固定使用同一版本；回答记录 `knowledge_index_version`。
-- **思维链不外露**：Qwen3 默认关闭思考模式，流中出现的 `<think>` 内容会被过滤。
-- **历史**：每轮把最近 `ASSISTANT_HISTORY_MESSAGES` 条消息（仅正文，不含工具中间结果）作为上下文；工具调用轨迹单独存档用于审计。
-- **客户端断开**：已生成的内容以 `interrupted` 状态保存。
-- vLLM 需开启工具调用（Qwen3：`--enable-auto-tool-choice --tool-call-parser hermes`）；DeepSeek 使用 `deepseek-chat`。
+| Process | Started with | Needs |
+| --- | --- | --- |
+| API server | `python scripts/run_api.py` | IoTDB, openGauss; optionally Milvus, LLM, embedding |
+| Simulated data | `python scripts/simulate_data.py` | IoTDB (or MQTT broker with `--target mqtt`) |
+| MQTT ingestion | `python scripts/mqtt_ingest.py` | MQTT broker, IoTDB |
+| Knowledge build | `python scripts/init_databases.py --milvus --sample-knowledge` or `industrial-ai-kb build` | Milvus, embedding API |
 
-### 知识库构建（离线）
+The processes are independent and only meet in the databases, so each can be started,
+stopped or replaced on its own.
 
-知识库不提供上传、删除或索引管理接口，由运维通过独立命令维护：
+---
+
+## Quick start (about 15 minutes)
+
+**Prerequisites**
+- Python **3.11 or newer** (tested with 3.13), `git`
+- Docker with Compose v2 (for the bundled database stack), about 6 GB free RAM.
+  Already running your own IoTDB / Milvus / openGauss / MQTT? Skip step 3 and see
+  [section 1](#1-databases-configure-initialise-verify).
+- Linux, macOS or Windows. Windows commands are shown where they differ.
+
+All commands run from the **`backend/`** directory. Commands that set variables inline
+(`NAME=value command`) are for bash/zsh; in PowerShell set them first with
+`$env:NAME="value"`.
+
+### Step 1 — Get the code
 
 ```bash
-industrial-ai-kb checksum corpus/manifest.json --write   # 准备发布：写入各文件 SHA-256（需人工复核）
-industrial-ai-kb build corpus/manifest.json              # 校验 → 解析 → 切片 → embedding → 写入 Milvus → 自检 → 切换别名
-industrial-ai-kb list                                    # 所有版本及当前生效版本
-industrial-ai-kb activate <version>                      # 切换/回滚（原子别名切换）
-industrial-ai-kb search "问题" --roles radiation_protection   # 检索调试
-industrial-ai-kb drop <version>                          # 删除非生效版本
+git clone -b claude/youthful-lamport-39blpl https://github.com/masskx/CompanyP26122.git
+cd CompanyP26122/backend
 ```
 
-- **清单**（示例见 `examples/knowledge/manifest.json`）：版本号、每个文档的 `doc_id`、路径、标题、来源、文档版本、生效日期、密级 `classification`、访问范围 `access_scope`（`all` 或角色名）和 `sha256`。任何文件校验不符即中止，不会写入。
-- **每个版本一个集合** `<KB_ALIAS>__<version>`，别名 `<KB_ALIAS>` 指向生效版本；构建失败自动删除半成品，生效版本不受影响；旧版本保留用于回滚。
-- **embedding 一致性**：模型名和维度写入集合属性 `kb.meta`。查询时若与当前 `EMBEDDING_MODEL` / `EMBEDDING_DIMENSIONS` 不一致，检索被拒绝（`/health/ready` 显示 `incompatible`），避免在不同向量空间中检索。更换模型或维度必须重新构建版本。
-- **格式**：Markdown（按标题保留章节路径）、纯文本；PDF 需 `pip install -e ".[pdf]"`（保留页码）。切片按句子打包（`KB_CHUNK_CHARS`、`KB_CHUNK_OVERLAP`），向量化时附加“标题 / 章节”。
-- **GLM embedding-3**：维度 256/512/1024/2048（默认配置 1024），单次请求最多 64 条、3072 tokens；批次同时按条数和字符数限制。
-- **示例语料**只描述本系统自身规则和单位换算，用于联调，不构成电站技术规程。
+(The backend lives on the `claude/youthful-lamport-39blpl` branch until it is merged; after
+that, clone without `-b`. A downloaded ZIP of that branch works the same way.)
 
-> **数据外发**：`EMBEDDING_PROVIDER=zhipu`（智谱公网 API）和 `LLM_PROVIDER=deepseek` 会把文本发送到公网服务，`APP_ENV=production` 时拒绝启动。核电技术文档在使用公网 API 建库前须经批准；生产环境应使用私有化部署的 GLM embedding（`EMBEDDING_PROVIDER=local`）和本地 vLLM。
+### Step 2 — Create a virtual environment and install
 
-## 会话存储（openGauss）
+```bash
+python -m venv .venv
+source .venv/bin/activate          # Windows PowerShell: .venv\Scripts\Activate.ps1
+pip install -e ".[dev,mqtt]"
+```
 
-表结构见 `src/industrial_ai/storage/migrations/0001_conversations.sql`：`app_users`（按 `issuer + subject` 唯一）、`chat_sessions`（软删除、归档）、`chat_messages`（会话内序号、状态、模型、知识版本、token、工具轨迹）、`message_citations`、`message_feedback`。所有查询都带 `user_id` 条件，用户无法访问他人会话（返回 404）。
+### Step 3 — Start the databases (Docker)
 
-初始化（以 openGauss 7.0 验证）：
+```bash
+docker compose -f deploy/docker-compose.yml up -d
+docker compose -f deploy/docker-compose.yml ps
+```
+
+Wait until `iotdb` and `milvus` show `(healthy)` (about one minute). This starts:
+
+| Service | Host port | Login (local only) |
+| --- | --- | --- |
+| Apache IoTDB 2.0.11 | 6667 | `root` / `root` |
+| Milvus 2.6.26 (standalone) | 19530 | none |
+| openGauss 7.0.0-RC3 | **15432** | admin `gaussdb` / `Gauss@Local2026` |
+| Mosquitto 2.0 (MQTT) | 1883 | anonymous |
+
+### Step 4 — Create your configuration
+
+```bash
+cp .env.example .env               # Windows: Copy-Item .env.example .env
+```
+
+The defaults already point at the Docker stack. Change `COMPUTE_SERVICE_TOKEN` to any
+long random string.
+
+### Step 5 — Initialise the databases
+
+```bash
+python scripts/init_databases.py --all --opengauss-admin-dsn "host=127.0.0.1 port=15432 dbname=postgres user=gaussdb password=Gauss@Local2026"
+```
+
+Expected output:
+
+```text
+== IoTDB  127.0.0.1:6667  root=root.mes
+  [OK]   database root.mes; time series created=7 existing=0
+== openGauss
+  [OK]   bootstrap: created user app_ai, created database industrial_ai, created schema app_ai
+  [OK]   migrations applied: 0001_conversations
+== Milvus  http://127.0.0.1:19530  alias=nuclear_kb
+  [OK]   connected; versions=[] active=None
+Done.
+```
+
+The admin DSN is only needed the first time; later runs are just
+`python scripts/init_databases.py --all`.
+
+### Step 6 — Check every connection
+
+```bash
+python scripts/check_connections.py --mqtt
+```
+
+### Step 7 — Generate simulated data (terminal 1)
+
+```bash
+python scripts/simulate_data.py
+```
+
+It writes 48 hours of history into IoTDB (a few seconds), then keeps adding live readings
+every 30–60 s until you press **Ctrl+C**.
+
+### Step 8 — Start the API (terminal 2)
+
+```bash
+python scripts/run_api.py
+```
+
+Open <http://127.0.0.1:8000/docs> for the interactive API documentation.
+
+### Step 9 — Run the end-to-end test (terminal 3)
+
+```bash
+python scripts/smoke_test.py
+```
+
+Without AI keys the assistant steps are skipped and you should see:
+
+```text
+== 3. Equipment health (IoTDB data + rules)
+           counts: {'normal': 4, 'watch': 1, 'inspect': 1, 'insufficient_data': 1}
+  [OK]   7 devices have data
+== 4. Maintenance analysis (SSE)
+  [OK]   status=completed health_level=inspect
+SMOKE TEST PASSED
+```
+
+### Step 10 — Turn on the AI assistant (DeepSeek + GLM)
+
+1. Provide the keys as environment variables (`DEEPSEEK_API` or `DEEPSEEK_API_KEY`, and
+   `GLM_API_KEY`), or put them in `.env` as `LLM_API_KEY=` / `EMBEDDING_API_KEY=`.
+   For example `export GLM_API_KEY=...` (Linux/macOS) or `$env:GLM_API_KEY="..."` (PowerShell).
+2. In `.env` set:
+   ```ini
+   LLM_PROVIDER=deepseek
+   EMBEDDING_PROVIDER=zhipu
+   ```
+3. Build the sample knowledge base (sends the four sample documents to the GLM API):
+   ```bash
+   python scripts/init_databases.py --milvus --sample-knowledge
+   ```
+4. Restart the API (Ctrl+C in terminal 2, then `python scripts/run_api.py`) and run
+   `python scripts/smoke_test.py` again. Steps 5 and 6 now check that the agent queried
+   IoTDB for a device question and searched Milvus (with a citation) for a knowledge
+   question.
+
+> DeepSeek and the Zhipu GLM API are public internet services. Use only simulated data
+> and approved documents with them. They are refused when `APP_ENV=production`.
+
+---
+
+## 1. Databases: configure, initialise, verify
+
+All connection settings live in **`.env`** (created from `.env.example`; every variable is
+documented there). Nothing else needs editing. Environment variables set in your shell
+override `.env`.
+
+### 1.1 Apache IoTDB (time series)
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `TIMESERIES_BACKEND` | `iotdb` | `memory` runs without IoTDB (data lost on restart) |
+| `IOTDB_HOST`, `IOTDB_PORT` | `127.0.0.1`, `6667` | RPC endpoint |
+| `IOTDB_USER`, `IOTDB_PASSWORD` | `root`, `root` | login |
+| `IOTDB_ROOT_PATH` | `root.mes` | database; series are `<root>.<site_id>.<equipment_id>.<metric>` |
+
+**Storage layout** (tree model, identical for simulated and real data):
+
+```text
+root.mes.AS01.`AS01-ISO-RM-01`.dose_rate     DOUBLE, µSv/h, millisecond timestamps
+```
+
+**Initialise:** `python scripts/init_databases.py --iotdb` creates the database and one
+`DOUBLE` series (GORILLA encoding, LZ4) for every metric of every device in
+`EQUIPMENT_CATALOG_PATH`. IoTDB also creates series automatically on first write, so this
+step matters mainly when automatic schema creation is disabled on your server.
+
+**Verify:**
+
+```bash
+python scripts/check_connections.py --no-paid
+docker exec industrial-ai-iotdb /iotdb/sbin/start-cli.sh -h 127.0.0.1 -p 6667 -u root -pw root -e "select last dose_rate from root.mes.AS01.\`AS01-ISO-RM-02\`"
+```
+
+### 1.2 openGauss (conversations)
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `SESSION_STORE_BACKEND` | `opengauss` | `memory` keeps conversations in RAM only |
+| `OPENGAUSS_DSN` | `host=127.0.0.1 port=15432 dbname=industrial_ai user=app_ai password=AppAi@Local2026` | application login (libpq format, keep the quotes in `.env`) |
+| `OPENGAUSS_POOL_MIN` / `_MAX` | `1` / `10` | connection pool |
+
+**Initialise (automatic):** with an admin login, the script creates the application user,
+the database and its schema, then applies the migrations. It is safe to run repeatedly.
+
+```bash
+python scripts/init_databases.py --opengauss --opengauss-admin-dsn "host=<host> port=<port> dbname=postgres user=<admin> password=<admin-password>"
+```
+
+**Initialise (manual, e.g. when a DBA prepares the database):**
 
 ```sql
--- 以管理员在 postgres 库执行（每条单独执行）
-CREATE USER app_ai PASSWORD '***';
+-- as an administrator, in the postgres database (run each statement separately)
+CREATE USER app_ai PASSWORD 'AppAi@Local2026';
 CREATE DATABASE industrial_ai DBCOMPATIBILITY 'PG' OWNER app_ai;
--- 在 industrial_ai 库执行
+-- then in the industrial_ai database
 CREATE SCHEMA app_ai AUTHORIZATION app_ai;
 ```
 
+followed by `python scripts/init_databases.py --opengauss` (or `industrial-ai-db migrate`).
+Tables: `app_users`, `chat_sessions`, `chat_messages`, `message_citations`,
+`message_feedback`, `schema_migrations`
+(`src/industrial_ai/storage/migrations/0001_conversations.sql`).
+
+openGauss specifics (all handled by the bootstrap; important if you prepare it by hand):
+- **`DBCOMPATIBILITY 'PG'` is required.** The default `A` mode stores empty strings as NULL;
+  the migration refuses such a database.
+- The **initial user (`omm`) cannot log in remotely**. Use a normal user with **md5**
+  authentication in `pg_hba.conf` (standard PostgreSQL drivers do not support openGauss's
+  sha256 method). The Docker image's `gaussdb` user works as the admin.
+- Ordinary users cannot create tables in `public`, hence the schema named after the user.
+
+**Verify:**
+
 ```bash
-industrial-ai-db migrate    # 幂等；兼容模式不是 PG 时拒绝执行
+python scripts/check_connections.py --no-paid
+docker exec -u omm industrial-ai-opengauss bash -lc "gsql -d industrial_ai -p 5432 -c 'SELECT title, message_count FROM app_ai.chat_sessions'"
 ```
 
-注意事项：
-- 必须使用 `DBCOMPATIBILITY 'PG'`：默认的 `A`（Oracle）模式会把空字符串存为 NULL。
-- 初始用户（omm）不能远程连接；应用使用普通用户，`pg_hba.conf` 使用 md5 认证（标准 libpq/psycopg 不支持 openGauss 的 sha256 认证）。
-- 非属主用户默认不能在 `public` 下建表，因此为应用用户创建同名 schema（默认 `search_path` 为 `"$user", public`）。
-- SQL 只使用 PostgreSQL 9.2 语法（openGauss 报告的版本），不使用 `ON CONFLICT`、自增标识列等新特性。
+### 1.3 Milvus (knowledge base)
 
-## 用户身份
-
-助手相关接口先校验服务令牌（调用方必须是 MES 主后端），再确定终端用户；未通过服务令牌的请求中的用户信息一律不采信。
-
-| `USER_IDENTITY_MODE` | 用户来源 | 适用 |
+| Variable | Default | Meaning |
 | --- | --- | --- |
-| `trusted_gateway`（默认） | 主后端转发的 `X-User-Id` / `X-User-Name` / `X-User-Roles` | 当前设计：主后端负责鉴权 |
-| `jwt` | `X-User-Assertion` 中由客户端身份系统签发的 JWT，校验签名、`iss`、`aud`、`exp` | 客户端提供令牌后推荐：即使转发方被冒用也无法伪造用户 |
-| `dev` | `X-User-Id` 或 `DEV_DEFAULT_USER`，不校验 | 仅开发；生产环境拒绝启动 |
+| `MILVUS_URI` | `http://127.0.0.1:19530` | empty disables knowledge search |
+| `MILVUS_TOKEN`, `MILVUS_DB_NAME` | unset, `default` | if authentication / databases are used |
+| `KB_ALIAS` | `nuclear_kb` | alias pointing at the active knowledge version |
+| `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS` | `none`, `embedding-3`, `1024` | GLM embedding used for **both** building and querying |
 
-用户以 `(issuer, subject)` 映射为内部 `user_id`，切换身份来源不会混淆不同来源的同名用户。用户角色用于知识库 `access_scope` 过滤。`GET /internal/v1/users/me` 返回当前解析出的用户，便于客户端联调。接入真实认证时只需切换 `USER_IDENTITY_MODE` 并配置密钥，接口和数据结构不变。
+There is nothing to create up front: each knowledge **version** becomes its own collection
+(`nuclear_kb__<version>`) when you build it, and the alias is switched to it atomically.
 
-## 助手接口
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `POST` | `/internal/v1/assistant/chat` | 提问（无 `session_id` 时新建会话），SSE 流式返回；响应头 `X-Session-Id` |
-| `POST` | `/internal/v1/assistant/sessions` | 新建会话 |
-| `GET` | `/internal/v1/assistant/sessions?limit=&before=&include_archived=` | 当前用户的会话列表（按更新时间倒序，游标分页） |
-| `GET` / `PATCH` / `DELETE` | `/internal/v1/assistant/sessions/{session_id}` | 查看 / 重命名、归档 / 软删除 |
-| `GET` | `/internal/v1/assistant/sessions/{session_id}/messages?limit=&before_seq=` | 历史消息（含引用），向前翻页 |
-| `POST` | `/internal/v1/assistant/messages/{message_id}/feedback` | 反馈 `{"rating": 1 或 -1, "comment": "..."}` |
-| `GET` | `/internal/v1/users/me` | 当前用户 |
-
-SSE 事件：`stage`（阶段，如 `retrieving_knowledge`，附检索语句）、`delta`（文本增量）、`citation`、`result`（完整消息）、`error`（`llm_unavailable` 等）、`done`。启动服务后 `/docs` 提供完整 OpenAPI 文档（生产环境关闭）。
-
-## 数据采集（MQTT → IoTDB）
-
-```text
-数据源 ──(topic, payload)──▶ 解析器 ──Measurement──▶ 校验 ──▶ 批量 ──▶ 写入
-simulator | mqtt            provisional_json | <真实格式>                iotdb | memory
+```bash
+python scripts/init_databases.py --milvus --sample-knowledge   # example corpus
+industrial-ai-kb checksum path/to/manifest.json --write          # prepare your own corpus
+industrial-ai-kb build path/to/manifest.json                     # build + activate a version
+industrial-ai-kb list                                            # versions, active flag
+industrial-ai-kb activate <version>                              # switch / roll back
+industrial-ai-kb search "剂量率单位换算" --top-k 5                # debug retrieval
 ```
 
-- **数据源**：`simulator` 生成与 MQTT 报文完全相同的 `(topic, payload)`；`mqtt` 订阅 Broker（断线指数退避重连，可选 TLS、持久会话）。
-- **解析器**：唯一了解报文格式的组件。剂量率统一换算为 µSv/h（支持 nSv/h、µSv/h、mSv/h、Sv/h），时间戳支持毫秒/秒和带时区的 ISO-8601。
-- **校验**：设备是否在目录中、数值有限且非负、时间戳不超前；被拒报文按原因计数，不会中断采集。
-- **写入**：按数量或时间批量写入 IoTDB（自动建序列，DOUBLE 类型）；写入失败保留批次并退避重试，缓冲区有上限，超出时丢弃最旧数据并计数。
+A manifest lists every document with its SHA-256, classification and access scope (see
+`examples/knowledge/manifest.json`). Supported formats: Markdown, text, and PDF after
+`pip install -e ".[pdf]"`.
 
-临时报文格式（模拟器使用，真实格式确定前有效）：
+**Changing the embedding model or dimensions requires rebuilding the knowledge base.** Each
+collection records the model it was built with, and the API refuses to search a collection
+built with a different one (`/health/ready` then shows `knowledge_base.status = incompatible`).
 
-```text
-topic:   <COLLECTOR_TOPIC_PREFIX>/<site_id>/<equipment_id>/<metric>     例：sim/radiation/AS01/AS01-ISO-RM-01/dose_rate
-payload: {"ts": 1767225600000, "value": 0.512, "unit": "uSv/h", "status": "ok"}
+**Verify:** `python scripts/check_connections.py` shows the active version and whether its
+embedding matches your configuration.
+
+### 1.4 MQTT broker
+
+`MQTT_HOST`, `MQTT_PORT`, `MQTT_TOPICS` (JSON list), `MQTT_USERNAME`, `MQTT_PASSWORD`,
+`MQTT_TLS`, `MQTT_CA_FILE`, `MQTT_QOS`, `MQTT_CLIENT_ID`, `MQTT_PERSISTENT_SESSION`.
+Check with `python scripts/check_connections.py --mqtt`. The bundled Mosquitto allows
+anonymous access and is for local development only.
+
+### 1.5 Using your own servers instead of Docker
+
+Edit the host, port and credentials in sections 2–5 of `.env`, run
+`python scripts/init_databases.py --all` (plus `--opengauss-admin-dsn` for a new
+openGauss), then `python scripts/check_connections.py`. Nothing in the code refers to the
+Docker stack.
+
+---
+
+## 2. FastAPI backend: install, configure, run, verify
+
+### 2.1 Install
+
+```bash
+pip install -e ".[dev,mqtt]"     # development: tests, linting, MQTT
+pip install -e ".[mqtt]"         # runtime only, with MQTT ingestion
+pip install -e ".[pdf]"          # PDF documents in the knowledge base
 ```
 
-### 运行方式
+Core dependencies: FastAPI, uvicorn, pydantic, httpx, apache-iotdb, pymilvus 2.6,
+psycopg 3, PyJWT.
 
-| 场景 | 命令 |
+### 2.2 Configure
+
+Everything is in `.env`; see `.env.example` for the full list. The essentials:
+
+| Area | Variables |
 | --- | --- |
-| 部署形态：模拟设备 → MQTT → 采集 → IoTDB | `industrial-ai-collector publish-sim`（模拟设备）+ `COLLECTOR_SOURCE=mqtt industrial-ai-collector run` + API |
-| 无 MQTT：模拟器直接写 IoTDB | `industrial-ai-collector run`（`COLLECTOR_SOURCE=simulator`）+ API |
-| 无任何外部服务（开发） | `TIMESERIES_BACKEND=memory API_EMBEDDED_COLLECTOR=true uvicorn ...` |
+| API access | `COMPUTE_SERVICE_TOKEN` (required; requests without it get 401) |
+| Users | `USER_IDENTITY_MODE` = `trusted_gateway` (default) / `jwt` / `dev` |
+| LLM | `LLM_PROVIDER` = `none` / `deepseek` / `vllm`, `LLM_API_KEY` or `DEEPSEEK_API`, `LLM_BASE_URL`, `LLM_MODEL` |
+| Embedding | `EMBEDDING_PROVIDER` = `none` / `zhipu` / `local`, `EMBEDDING_API_KEY` or `GLM_API_KEY` |
+| Databases | sections 2–4 of `.env` |
 
-采集进程与 API 进程相互独立，只通过 IoTDB 交换数据；`/health/ready` 中可查看内嵌采集器的统计。
+Switching from DeepSeek to your local model later is configuration only:
 
-### 模拟数据
-
-`examples/simulation/radiation_scenario.json` 同时是设备目录和模拟配置（7 个模拟监测点：5 个隔离室区域 γ 剂量率、2 个厂界环境 γ 站）。模型包含本底、计数统计噪声（相对噪声随剂量率升高而减小）、缓慢漂移、日变化，以及随机/脚本事件：尖峰、剂量率抬升、降雨冲刷（环境站）、通信中断、数值冻结。脚本事件使最近 24 小时依次覆盖 `normal`、`watch`、`inspect`、`insufficient_data`。
-
-> **场景中的本底值、事件和阈值全部为虚构，仅用于联调测试，不是电站数据、法规限值或报警设定值。** 默认随机种子固定，结果可复现。
-
-### 接入真实 MQTT 时需要改动的部分
-
-1. 在 `collector/parser.py` 新增解析类，实现 `parse(RawMessage) -> list[Measurement]`（无效报文抛出 `RejectedMessage`），注册到 `PARSERS`，设置 `COLLECTOR_PARSER`。
-2. 设置 `COLLECTOR_SOURCE=mqtt` 及 `MQTT_HOST`、`MQTT_TOPICS`、认证和 TLS 参数。
-3. 将 `EQUIPMENT_CATALOG_PATH` 指向真实设备清单，业务方提供阈值后填入 `thresholds`。
-4. 运行集成测试确认。
-
-数据源、校验、批量写入、IoTDB 读写、分析规则和 API 均无需修改。
-
-### 集成测试
-
-```bash
-IOTDB_TEST_HOST=127.0.0.1 MQTT_TEST_HOST=127.0.0.1 \
-MILVUS_TEST_URI=http://127.0.0.1:19530 \
-OPENGAUSS_TEST_DSN="host=127.0.0.1 port=5432 dbname=industrial_ai_test user=app_ai password=***" \
-pytest
+```ini
+LLM_PROVIDER=vllm
+LLM_BASE_URL=http://127.0.0.1:8000/v1
+LLM_MODEL=<name given to vllm serve --served-model-name>
+LLM_MODEL_PRECISION=W8A8
 ```
 
-未设置相应变量时自动跳过（Milvus 相关测试始终会在内嵌的 Milvus Lite 上运行）。
+(vLLM must run with tool calling enabled; for Qwen3:
+`--enable-auto-tool-choice --tool-call-parser hermes`.)
 
-真实 DeepSeek / 智谱 GLM 接口测试（产生费用，只发送示例文档和合成问题）：
+### 2.3 Start
+
+```bash
+python scripts/run_api.py                       # http://127.0.0.1:8000
+python scripts/run_api.py --reload              # restart on code changes
+python scripts/run_api.py --host 0.0.0.0        # reachable from other machines
+```
+
+`run_api.py` is equivalent to
+`uvicorn --factory industrial_ai.api.main:app_factory`, plus the event-loop setting
+openGauss needs on Windows. Stop it with Ctrl+C.
+
+### 2.4 Verify
+
+- `python scripts/smoke_test.py`: health → identity → IoTDB data → analysis → assistant →
+  knowledge search → history.
+- <http://127.0.0.1:8000/docs>: interactive OpenAPI documentation (disabled in production).
+- `curl http://127.0.0.1:8000/health/ready` lists every component's status.
+
+Every `/internal/v1` request needs the service token. Assistant endpoints also need the end
+user, which in the default mode the MES backend sends as headers:
+
+```bash
+TOKEN=local-dev-token-change-me
+curl -s "http://127.0.0.1:8000/internal/v1/equipment/health?site_id=AS01" -H "Authorization: Bearer $TOKEN"
+curl -N http://127.0.0.1:8000/internal/v1/assistant/chat -H "Authorization: Bearer $TOKEN" -H "X-User-Id: alice" -H "Content-Type: application/json" -d '{"message": "AS01-ISO-RM-02 最近6小时剂量率情况如何？"}'
+curl -s http://127.0.0.1:8000/internal/v1/assistant/sessions -H "Authorization: Bearer $TOKEN" -H "X-User-Id: alice"
+```
+
+### 2.5 API overview
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/health/live`, `/health/ready`, `/health/model` | liveness, component status, model info |
+| GET | `/internal/v1/equipment/health?site_id=&category=` | health classification of every device |
+| POST | `/internal/v1/maintenance/analyses` | start an analysis (`202`, `Idempotency-Key` supported) |
+| GET | `/internal/v1/maintenance/analyses/{id}/events` | SSE progress and result (`Last-Event-ID` to resume) |
+| GET | `/internal/v1/maintenance/analyses/{id}` | stored result |
+| POST | `/internal/v1/assistant/chat` | ask (SSE: `stage`, `delta`, `citation`, `result`, `error`, `done`) |
+| POST / GET | `/internal/v1/assistant/sessions` | create / list the user's sessions |
+| GET / PATCH / DELETE | `/internal/v1/assistant/sessions/{id}` | view / rename or archive / delete |
+| GET | `/internal/v1/assistant/sessions/{id}/messages` | history with citations |
+| POST | `/internal/v1/assistant/messages/{id}/feedback` | `{"rating": 1}` or `-1` |
+| GET | `/internal/v1/users/me` | the user as resolved from the request |
+
+User identity: the service token is checked first; only then is the user taken from the
+trusted headers (`trusted_gateway`) or from a signed JWT (`jwt`, recommended once the client
+issues tokens). Sessions are always scoped to that user; another user's session returns
+404. See `.env.example` section 9.
+
+---
+
+## 3. Simulated data for local testing
+
+### 3.1 What is simulated
+
+Seven synthetic monitoring points at site `AS01`, defined in
+`examples/simulation/radiation_scenario.json`. That file is both the simulation config and
+the equipment catalog. The model includes a stable background level, counting noise, slow
+drift and daily variation, plus random and scripted events: spikes, sustained rises, rain
+washout, communication outages and frozen sensors. Scripted events make the last 24 hours
+cover every health level:
+
+| Device | Expected health | Why |
+| --- | --- | --- |
+| AS01-ISO-RM-01, RM-05, ENV-01, ENV-02 | normal | background only (RM-05 has a frozen-sensor episode the rules do not flag yet) |
+| AS01-ISO-RM-02 | inspect | 40-minute rise above the alarm level |
+| AS01-ISO-RM-04 | watch | 30-minute rise above the warning level |
+| AS01-ISO-RM-03 | insufficient_data | 5.5-hour outage, 77% completeness |
+
+> All baselines, events and thresholds in the scenario are invented for testing. They are not
+> plant data, regulatory limits or alarm set-points.
+
+### 3.2 Yes: a Python script inserts it into IoTDB
+
+`scripts/simulate_data.py` produces exactly the messages the real MQTT feed will deliver,
+sends them through the same parser → validator → batch → IoTDB writer, and stores them in
+the same series. Three ways to run it:
+
+| Mode | Command | Use when |
+| --- | --- | --- |
+| Straight into IoTDB | `python scripts/simulate_data.py` | everyday development |
+| Through the MQTT broker | `python scripts/mqtt_ingest.py` (terminal A) + `python scripts/simulate_data.py --target mqtt` (terminal B) | testing the full MQTT path as it will run in production |
+| No databases at all | `TIMESERIES_BACKEND=memory SESSION_STORE_BACKEND=memory MILVUS_URI= API_EMBEDDED_COLLECTOR=true python scripts/run_api.py` | quick demos: data and conversations live inside the API process and are lost on exit |
+
+### 3.3 Start, stop and control
+
+```bash
+python scripts/simulate_data.py                                # 48 h history, then live until Ctrl+C
+python scripts/simulate_data.py --backfill-hours 24 --no-realtime   # history only, then exit
+python scripts/simulate_data.py --duration 30                  # stop after 30 minutes
+python scripts/simulate_data.py --seed 7                       # different (but reproducible) data
+python scripts/simulate_data.py --target stdout --backfill-hours 0.1 --no-realtime   # just print
+python scripts/simulate_data.py --scenario my_scenario.json    # your own devices/events
+python scripts/simulate_data.py --purge --yes                  # delete the simulated series
+```
+
+- **Stop** with Ctrl+C (or SIGTERM). Buffered points are flushed first and the final count is
+  printed, e.g. `written=33910 rejected={} write_failures=0`.
+- Re-running with the same seed rewrites the same timestamps, so restarts do not duplicate
+  data.
+- Keep at least 24 hours of history. With less, most devices show `insufficient_data`,
+  because the default health window is 24 h and needs 80% completeness.
+- To change devices, baselines or events, copy the scenario file, edit it, and point both
+  `SIMULATOR_SCENARIO_PATH` and `EQUIPMENT_CATALOG_PATH` at the copy.
+
+### 3.4 Verify the data and the agent
+
+1. **Data is in IoTDB:** `python scripts/check_connections.py --no-paid` shows point counts and
+   the latest timestamp per device.
+2. **Rules see it:** the equipment health counts match the table above
+   (`python scripts/smoke_test.py`, step 3).
+3. **The agent analyses it** (needs an LLM, Quick start step 10): `smoke_test.py` step 5 asks
+   about AS01-ISO-RM-02 and checks the agent called a data tool. Try your own questions in
+   `/docs` → `POST /internal/v1/assistant/chat`, for example:
+   - `AS01 站哪些监测点需要关注？`
+   - `AS01-ISO-RM-03 为什么数据不足？`
+   - `剂量率 mSv/h 和 µSv/h 怎么换算？` (knowledge base)
+
+   The `stage` events show which tool the agent chose, and the `result` lists `tools_used`
+   and `citations`.
+
+---
+
+## 4. Switching to the real MQTT feed
+
+### 4.1 What changes and what doesn't
+
+```text
+MessageSource ──(topic, payload)──► MessageParser ──Measurement──► Validator ──► batch ──► IoTDBWriter
+simulator | mqtt | file replay      provisional_json | mapping | your class
+```
+
+Only the **source** and the **parser** know where messages come from and what they look
+like. Every parser produces the same `Measurement(site_id, equipment_id, metric, timestamp,
+value in µSv/h)`, so the IoTDB layout, the API endpoints, the rules and the AI agent are
+untouched by the switch.
+
+### 4.2 Step by step
+
+1. **Capture a few real messages** into a JSON Lines file, one
+   `{"topic": "...", "payload": {...}}` per line (see `examples/mqtt/captured.example.jsonl`).
+2. **Describe the format** in a mapping file (no code needed in most cases). Start from
+   `examples/mqtt/mapping.example.json`, which handles an invented vendor format with a
+   readings list, nSv/h units, ISO timestamps, a status field and vendor device IDs.
+3. **Test offline**; nothing is written:
+   ```bash
+   python scripts/mqtt_ingest.py --from-file captured.jsonl --dry-run --parser mapping --parser-config my_mapping.json
+   ```
+   It prints every measurement that would be stored, then counts per rejection reason:
+   ```text
+   {"site_id": "AS01", "equipment_id": "AS01-ISO-RM-01", "metric": "dose_rate", "timestamp": "2026-11-05T10:00:00+08:00", "value": 0.512}
+   stats: {"received": 5, "written": 3, "rejected": {"device_status": 1, "unmapped_device": 1, "bad_topic": 1}, ...}
+   ```
+4. **Test against the live broker**, still without writing:
+   ```bash
+   python scripts/mqtt_ingest.py --dry-run --host <broker> --topics "plant/#" --parser mapping --parser-config my_mapping.json
+   ```
+5. **Register the real equipment.** Create a catalog file shaped like
+   `examples/equipment_catalog.example.json` with the real site/equipment IDs, and set
+   `EQUIPMENT_CATALOG_PATH` to it. Add thresholds when the plant provides them; until then
+   those metrics report `insufficient_data` rather than guessing.
+6. **Configure `.env`:**
+   ```ini
+   COLLECTOR_SOURCE=mqtt
+   COLLECTOR_PARSER=mapping
+   COLLECTOR_PARSER_CONFIG=config/my_mapping.json
+   MQTT_HOST=<broker>
+   MQTT_TOPICS=["plant/#"]
+   MQTT_USERNAME=...
+   MQTT_PASSWORD=...
+   MQTT_TLS=true
+   MQTT_CLIENT_ID=industrial-ai-ingest
+   MQTT_PERSISTENT_SESSION=true
+   ```
+7. **Run ingestion** and stop running `simulate_data.py`:
+   ```bash
+   python scripts/mqtt_ingest.py
+   ```
+   Optionally remove the simulated series with `python scripts/simulate_data.py --purge --yes`.
+
+### 4.3 Mapping file reference
+
+| Key | Meaning |
+| --- | --- |
+| `topic_pattern` | regex for accepted topics; named groups `site_id`, `device`, `metric` can supply values |
+| `records_path` | dotted path to a list of readings inside one message (`null` = the payload is one reading) |
+| `fields.device` / `site_id` / `timestamp` / `value` / `unit` / `status` / `metric` | dotted paths inside a reading (`data.doseRate`, `readings.0.value`) |
+| `timestamp_format` | `auto`, `epoch_ms`, `epoch_s`, `iso8601` |
+| `default_unit` | unit when the message has none (`nSv/h`, `uSv/h`, `µSv/h`, `mSv/h`, `Sv/h`) |
+| `default_metric` | metric name when none is given (`dose_rate`) |
+| `ok_status` | status values that count as valid; other values are rejected as `device_status` |
+| `device_map` | vendor device ID → `{site_id, equipment_id[, metric]}` |
+| `unmapped_devices` | `reject` (default) or `passthrough` (use site from topic, equipment = device ID) |
+
+### 4.4 Handling differences between simulated and real data
+
+| Difference | Where it is handled |
+| --- | --- |
+| Topic structure | `topic_pattern` |
+| Field names / nesting | `fields.*` dotted paths |
+| Several readings per message | `records_path`; one bad reading does not discard the others |
+| Units (nSv/h, mSv/h, …) | converted to µSv/h by the parser |
+| Timestamp formats / time zones | `timestamp_format`; stored as UTC milliseconds |
+| Vendor device IDs | `device_map` |
+| Fault / maintenance status | `ok_status` |
+| Unknown devices | rejected and counted (`unmapped_device`, `unknown_equipment`), never silently stored |
+| Bad values, future timestamps | validator (`bad_value`, `future_timestamp`) |
+| Additional metrics (e.g. temperature) | add them to the equipment catalog; `metric` from topic or field |
+
+For formats a mapping cannot express (binary payloads, compressed batches, …) write a parser
+class and point `COLLECTOR_PARSER` at it; no change inside this package is needed:
+
+```python
+# mycompany/plant_parser.py
+from industrial_ai.collector.models import Measurement, RawMessage, RejectedMessage
+
+class PlantParser:
+    def __init__(self, settings):
+        ...
+
+    def parse(self, message: RawMessage) -> list[Measurement]:
+        # decode message.payload; raise RejectedMessage("bad_payload", "...") to reject
+        return [Measurement(site_id=..., equipment_id=..., metric="dose_rate",
+                            timestamp=..., value=...)]  # value in µSv/h
+```
+
+```ini
+COLLECTOR_PARSER=mycompany.plant_parser:PlantParser
+```
+
+### 4.5 Reliability of the ingestion process
+
+- QoS 1 with `MQTT_PERSISTENT_SESSION=true` and a fixed `MQTT_CLIENT_ID`: the broker keeps
+  messages while the ingester restarts.
+- Lost broker connections reconnect automatically with exponential backoff.
+- If IoTDB is down, batches are retried with backoff and kept in memory up to
+  `COLLECTOR_MAX_BUFFER` points (oldest dropped beyond that, and counted).
+- Statistics are logged every minute and printed on exit (`received`, `written`, `rejected`
+  by reason, `write_failures`, `dropped`).
+- To run it as a service, use your process manager (systemd, Windows service, container)
+  with `python scripts/mqtt_ingest.py` from `backend/`. SIGTERM stops it cleanly.
+
+---
+
+## 5. Scripts and command-line tools
+
+| Script (`backend/scripts/`) | Purpose |
+| --- | --- |
+| `init_databases.py` | IoTDB schema, openGauss bootstrap + migrations, Milvus check / sample knowledge |
+| `check_connections.py` | verify IoTDB, openGauss, Milvus, embedding, LLM, MQTT |
+| `simulate_data.py` | simulated dose-rate data → IoTDB / MQTT / stdout; purge |
+| `mqtt_ingest.py` | MQTT → IoTDB ingestion; `--dry-run`, `--from-file` |
+| `run_api.py` | start the FastAPI server (cross-platform) |
+| `smoke_test.py` | end-to-end check of a running server |
+
+All scripts accept `--env-file` (default `.env`) and `--help`. Installed command-line tools:
+
+| Command | Purpose |
+| --- | --- |
+| `industrial-ai-kb` | knowledge base: `checksum`, `build`, `list`, `activate`, `drop`, `search` |
+| `industrial-ai-db migrate` | apply openGauss migrations |
+| `industrial-ai-collector run` / `publish-sim` | collector using `COLLECTOR_SOURCE` from `.env` |
+
+---
+
+## Testing
+
+```bash
+pytest                    # unit tests; Milvus tests run on embedded Milvus Lite (not on Windows)
+ruff check .
+```
+
+Integration tests against real services run when these are set (use a **dedicated**
+openGauss test database; its tables are emptied):
+
+```bash
+IOTDB_TEST_HOST=127.0.0.1 MQTT_TEST_HOST=127.0.0.1 MILVUS_TEST_URI=http://127.0.0.1:19530 OPENGAUSS_TEST_DSN="host=127.0.0.1 port=15432 dbname=industrial_ai_test user=app_ai password=AppAi@Local2026" pytest
+```
+
+Live tests against DeepSeek and GLM (cost a little; send only sample documents):
 
 ```bash
 LIVE_PROVIDER_TESTS=1 pytest tests/test_live_providers.py -s
 ```
 
-密钥读取：DeepSeek 为 `LLM_API_KEY`，或 `DEEPSEEK_API_KEY` / `DEEPSEEK_API`（仅在 `LLM_PROVIDER=deepseek` 时使用）；GLM 为 `EMBEDDING_API_KEY`，或 `GLM_API_KEY` / `ZHIPU_API_KEY`（仅在 `EMBEDDING_PROVIDER=zhipu` 时使用）。`OPENGAUSS_TEST_DSN` 必须指向专用测试库（每个测试前清空表）。已在 IoTDB 2.0.11、Mosquitto、Milvus 2.6.26 standalone、openGauss 7.0.0-RC3 上验证。
+---
 
-## 判定阈值
+## Troubleshooting
 
-规则引擎不内置任何限值。指标的预警/报警限值在设备目录中配置（`thresholds`）；**未配置阈值的指标（如目前的辐射剂量率）一律判为 `insufficient_data` 并列入数据缺口，不做推测。** 判定规则见 `src/industrial_ai/analytics/rules.py` 顶部注释。`confidence` 是数据覆盖度（可判定指标占比 × 平均数据完整率），不是模型概率。
+| Symptom | Cause / fix |
+| --- | --- |
+| `port is already allocated` on `docker compose up` | another service uses 6667 / 19530 / 15432 / 1883; stop it or change the host port in `deploy/docker-compose.yml` and `.env` |
+| `invalid configuration: ... LLM_API_KEY (or DEEPSEEK_API_KEY / DEEPSEEK_API) is required` | provider enabled without a key; set the key or the provider back to `none` |
+| openGauss `permission denied for schema public` | the schema named after the app user is missing; re-run init with `--opengauss-admin-dsn` |
+| openGauss `Forbid remote connection with initial user` | do not use `omm`; use `gaussdb` (Docker) or another admin |
+| `database compatibility is 'A'` | recreate the database with `DBCOMPATIBILITY 'PG'` |
+| IoTDB `connection refused` | container still starting (wait for `healthy`) or wrong `IOTDB_HOST`/`PORT` |
+| Most devices `insufficient_data` | less than ~20 h of data in the last 24 h: run `simulate_data.py` with the default 48 h history |
+| `/health/ready` → `knowledge_base: incompatible` | the index was built with another embedding model/dimensions: rebuild with the current settings |
+| chat returns `503 llm_unavailable` | `LLM_PROVIDER=none`, or the model service is unreachable (`check_connections.py`) |
+| `401 unauthorized` / `user_identity_required` | missing `Authorization: Bearer <COMPUTE_SERVICE_TOKEN>` / missing `X-User-Id` |
+| Windows: `Psycopg cannot use the 'ProactorEventLoop'` | start the API with `python scripts/run_api.py`, not plain `uvicorn` |
+| Windows: `milvus-lite` not found | expected; Milvus Lite has no Windows build, so those tests are skipped |
+| `aiomqtt is not installed` | `pip install -e ".[mqtt]"` |
 
-## 本地运行
+---
 
-```bash
-cd backend
-python -m venv .venv && . .venv/bin/activate
-pip install -e ".[dev]"            # 生产采集进程使用 MQTT 时：pip install -e ".[mqtt]"
-cp .env.example .env              # 填写 COMPUTE_SERVICE_TOKEN
-industrial-ai-collector run       # 模拟数据 -> IoTDB（另开终端）
-industrial-ai-db migrate          # SESSION_STORE_BACKEND=opengauss 时
-industrial-ai-kb build examples/knowledge/manifest.json   # 配置 EMBEDDING_* 与 MILVUS_URI 后
-uvicorn --factory industrial_ai.api.main:app_factory --reload
-```
+## Before production
 
-```bash
-pytest
-ruff check .
-```
+- Public APIs (DeepSeek, Zhipu GLM) and `USER_IDENTITY_MODE=dev` are **refused when
+  `APP_ENV=production`**. Use the local vLLM model and a privately deployed GLM embedding
+  (`EMBEDDING_PROVIDER=local`).
+- Replace every password and token from the local stack; configure Mosquitto with
+  authentication and TLS; restrict the API to the MES backend's address.
+- Prefer `USER_IDENTITY_MODE=jwt` once the client application issues signed user tokens.
+- Maintenance-analysis results are still kept in memory (conversations are persisted).
 
-未配置 `COMPUTE_SERVICE_TOKEN` 时，所有业务接口返回 503（拒绝访问）。
+---
 
-## 目录
+## Project layout
 
 ```text
-src/industrial_ai/
-├── api/            # FastAPI 应用、依赖装配、路由（equipment / maintenance / assistant / health）
-├── collector/      # 数据采集：数据源（模拟器 / MQTT）、解析、校验、批量写入、命令行
-├── agent/          # 智能体循环与只读工具（知识检索、设备健康、设备读数）
-├── core/           # 配置、日志、错误模型、服务认证、用户身份
-├── integrations/   # 大模型客户端（DeepSeek / vLLM，流式 + 工具调用）、GLM embedding 客户端
-├── knowledge/      # 知识清单、文档解析、切片、Milvus 版本化存储、离线构建、检索、命令行
-├── schemas/        # Pydantic 数据模型（与设计文档 §4 接口对应）
-├── storage/        # 存储接口、内存实现、IoTDB 适配、设备目录、openGauss 会话存储与迁移
-├── analytics/      # 统计与确定性判定规则
-├── services/       # 健康概览、维护分析、模型说明、助手
-└── workers/        # 后台分析任务执行
+backend/
+├── .env.example            all settings, documented (copy to .env)
+├── pyproject.toml          dependencies and command-line tools
+├── deploy/                 docker-compose.yml for IoTDB, Milvus, openGauss, Mosquitto
+├── scripts/                init, checks, simulation, MQTT ingestion, API start, smoke test
+├── examples/
+│   ├── simulation/         simulation scenario (= equipment catalog of the simulated devices)
+│   ├── knowledge/          sample knowledge corpus + manifest
+│   ├── mqtt/               example mapping file + captured messages for the real-feed workflow
+│   └── equipment_catalog.example.json
+├── src/industrial_ai/
+│   ├── api/                FastAPI app, dependency wiring, routers
+│   ├── agent/              agent loop and read-only tools
+│   ├── analytics/          statistics and deterministic health rules
+│   ├── collector/          sources (simulator, MQTT, file), parsers, validator, writers
+│   ├── core/               settings, logging, errors, service token, user identity
+│   ├── integrations/       LLM client (DeepSeek / vLLM), GLM embedding client
+│   ├── knowledge/          manifest, loaders, chunking, Milvus store, builder, retriever
+│   ├── services/           equipment health, maintenance, assistant
+│   ├── storage/            IoTDB, openGauss (+ migrations), catalog, in-memory stores
+│   └── workers/            background analysis runner
+├── tests/
+└── docs/architecture.zh-CN.md
 ```

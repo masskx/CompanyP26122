@@ -91,8 +91,10 @@ def test_parser_rejections(topic, payload, expected):
 
 
 def test_unknown_parser_name():
+    from industrial_ai.core.config import Settings
+
     with pytest.raises(ValueError, match="provisional_json"):
-        build_parser("real_format_v1", "x")
+        build_parser(Settings(_env_file=None, collector_parser="real_format_v1"))
 
 
 # ---- validator ---------------------------------------------------------------------------

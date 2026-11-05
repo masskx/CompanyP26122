@@ -138,6 +138,7 @@ async def test_embedding_dimension_mismatch_is_fatal():
 @pytest.fixture(params=["lite", "server"])
 def store(request, tmp_path):
     if request.param == "lite":
+        pytest.importorskip("milvus_lite", reason="Milvus Lite is not available on Windows")
         uri, index = str(tmp_path / "milvus_lite.db"), "FLAT"
     else:
         if not MILVUS_URI:

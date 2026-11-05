@@ -37,6 +37,7 @@ def parse_sse(text: str) -> list[tuple[str, dict]]:
 
 @pytest.fixture
 async def kb(tmp_path):
+    pytest.importorskip("milvus_lite", reason="Milvus Lite is not available on Windows")
     store = MilvusKnowledgeStore(str(tmp_path / "kb.db"), alias="kb", index_type="FLAT")
     embedder = FakeEmbedder()
     await build_knowledge_base(SAMPLE, store, embedder, chunk_chars=200, chunk_overlap=30)
