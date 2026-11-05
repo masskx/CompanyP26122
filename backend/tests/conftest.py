@@ -34,6 +34,7 @@ def anyio_backend() -> str:
 @pytest.fixture
 def settings() -> Settings:
     return Settings(_env_file=None, compute_service_token=SecretStr(TOKEN),
+                    timeseries_backend="memory", llm_provider="none",
                     sse_heartbeat_seconds=0.05, consecutive_breach_count=3)
 
 

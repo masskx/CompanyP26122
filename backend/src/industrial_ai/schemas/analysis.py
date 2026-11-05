@@ -67,6 +67,7 @@ class DataGap(ApiModel):
 
 
 class ModelInfo(ApiModel):
+    provider: str  # deepseek (dev/test only) | vllm
     name: str
     precision: str
     revision: str
@@ -94,6 +95,7 @@ class AnalysisResult(ApiModel):
     confidence: float | None = None
     created_at: datetime
     generated_at: datetime | None = None
-    # None while explanations come from deterministic rules only (no LLM wired yet).
+    # None when the text comes from deterministic rules only (no model, or model output
+    # rejected). The health level is always decided by the rules.
     model: ModelInfo | None = None
     error: ErrorInfo | None = None

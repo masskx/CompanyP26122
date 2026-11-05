@@ -29,7 +29,8 @@ async def ready(c: Container = Depends(get_container)) -> JSONResponse:
                            "persistent": s.analysis_store_backend != "memory"},
         "session_store": {"backend": s.session_store_backend, "status": "ok",
                           "persistent": s.session_store_backend != "memory"},
-        "llm": {"status": "configured_unchecked" if s.vllm_base_url else "not_configured"},
+        "llm": {"provider": s.llm_provider,
+                "status": "not_configured" if s.llm_provider == "none" else "configured_unchecked"},
         "vector_db": {"status": "not_configured"},
         "embedding": {"status": "not_configured"},
         "rerank": {"status": "not_configured"},
@@ -49,7 +50,10 @@ async def ready(c: Container = Depends(get_container)) -> JSONResponse:
 async def model(c: Container = Depends(get_container)) -> dict:
     s = c.settings
     return {
-        "name": s.vllm_model_name,
-        "status": "configured_unchecked" if s.vllm_base_url else "not_configured",
+        "provider": s.llm_provider,
+        "name": s.resolved_llm_model,
+        "precision": s.llm_model_precision,
+        "revision": s.llm_model_revision,
+        "status": "not_configured" if s.llm_provider == "none" else "configured_unchecked",
         "last_inference_check": None,
     }

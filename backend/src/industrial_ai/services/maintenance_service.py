@@ -27,6 +27,7 @@ from industrial_ai.schemas.analysis import (
 from industrial_ai.schemas.common import HealthLevel
 from industrial_ai.schemas.events import StreamEvent
 from industrial_ai.services.equipment_service import EquipmentService
+from industrial_ai.services.maintenance_explainer import MaintenanceExplainer
 from industrial_ai.storage.base import (
     AnalysisRecord,
     AnalysisStore,
@@ -49,6 +50,7 @@ class MaintenanceService:
         max_range_days: int,
         max_equipment: int,
         timeout_seconds: float,
+        explainer: MaintenanceExplainer | None = None,
     ) -> None:
         self._catalog = catalog
         self._equipment = equipment
@@ -57,6 +59,7 @@ class MaintenanceService:
         self._max_range = timedelta(days=max_range_days)
         self._max_equipment = max_equipment
         self._timeout = timeout_seconds
+        self._explainer = explainer
 
     # ---- create -------------------------------------------------------------------------
 
@@ -195,10 +198,7 @@ class MaintenanceService:
         overall = combine_levels(levels)
         gaps = gaps + [g for a in assessments for g in a.gaps]
 
-        await self._store.append_event(
-            aid, "stage", _stage("composing_result", "正在整理分析结果", 0.9)
-        )
-        return result.model_copy(update={
+        ruled = result.model_copy(update={
             "status": AnalysisStatus.PARTIAL if gaps else AnalysisStatus.COMPLETED,
             "health_level": overall,
             "risk_summary": _risk_summary(assessments, overall),
@@ -206,8 +206,18 @@ class MaintenanceService:
             "recommendations": recommendations_for(assessments),
             "data_gaps": gaps,
             "confidence": coverage_confidence(assessments, overall),
-            "generated_at": datetime.now(UTC),
         })
+
+        if self._explainer is not None and ruled.evidence:
+            await self._store.append_event(
+                aid, "stage", _stage("explaining", "正在生成分析说明", 0.75)
+            )
+            ruled = await self._explainer.explain(ruled)
+
+        await self._store.append_event(
+            aid, "stage", _stage("composing_result", "正在整理分析结果", 0.9)
+        )
+        return ruled.model_copy(update={"generated_at": datetime.now(UTC)})
 
     async def _finish(self, final: AnalysisResult) -> None:
         await self._store.save_result(final)

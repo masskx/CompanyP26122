@@ -7,8 +7,10 @@ from fastapi import Request
 
 from industrial_ai.analytics.rules import RuleConfig
 from industrial_ai.core.config import Settings
+from industrial_ai.integrations.llm_client import LLMClient, LLMConfig
 from industrial_ai.services.assistant_service import AssistantService
 from industrial_ai.services.equipment_service import EquipmentService
+from industrial_ai.services.maintenance_explainer import MaintenanceExplainer
 from industrial_ai.services.maintenance_service import MaintenanceService
 from industrial_ai.storage.base import (
     AnalysisStore,
@@ -38,10 +40,13 @@ class Container:
     equipment: EquipmentService
     maintenance: MaintenanceService
     assistant: AssistantService
+    llm: LLMClient | None = None
 
     async def aclose(self) -> None:
         await self.runner.shutdown()
         await self.timeseries.close()
+        if self.llm is not None:
+            await self.llm.aclose()
 
 
 def build_timeseries(settings: Settings) -> TimeSeriesStore:
@@ -64,6 +69,18 @@ def build_catalog(settings: Settings) -> EquipmentCatalog:
     return StaticEquipmentCatalog.from_file(settings.equipment_catalog_path)
 
 
+def build_llm(settings: Settings) -> LLMClient | None:
+    config = LLMConfig.from_settings(settings)
+    if config is None:
+        return None
+    if config.provider == "deepseek":
+        logger.warning(
+            "LLM_PROVIDER=deepseek: prompts are sent to a public internet API. "
+            "Use synthetic or approved desensitised test data only."
+        )
+    return LLMClient(config)
+
+
 def build_container(
     settings: Settings,
     *,
@@ -71,12 +88,14 @@ def build_container(
     timeseries: TimeSeriesStore | None = None,
     analysis_store: AnalysisStore | None = None,
     session_store: SessionStore | None = None,
+    llm: LLMClient | None = None,
 ) -> Container:
     catalog = catalog or build_catalog(settings)
     timeseries = timeseries or build_timeseries(settings)
     analysis_store = analysis_store or InMemoryAnalysisStore()
     session_store = session_store or InMemorySessionStore()
     runner = AnalysisRunner()
+    llm = llm or build_llm(settings)
     rules = RuleConfig(min_completeness=settings.min_data_completeness,
                        consecutive_breach_count=settings.consecutive_breach_count)
     equipment = EquipmentService(catalog, timeseries, rules, settings.health_window_hours)
@@ -85,13 +104,14 @@ def build_container(
         max_range_days=settings.analysis_max_range_days,
         max_equipment=settings.max_equipment_per_analysis,
         timeout_seconds=settings.analysis_timeout_seconds,
+        explainer=MaintenanceExplainer(llm) if llm is not None else None,
     )
     assistant = AssistantService(
         session_store, max_message_chars=settings.assistant_max_message_chars,
         knowledge_index_version=settings.knowledge_index_version,
     )
     return Container(settings, catalog, timeseries, analysis_store, session_store, runner,
-                     equipment, maintenance, assistant)
+                     equipment, maintenance, assistant, llm)
 
 
 def get_container(request: Request) -> Container:
