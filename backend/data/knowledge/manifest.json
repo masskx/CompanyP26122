@@ -1,0 +1,42 @@
+{
+  "version": "sample_2026_11_05",
+  "title": "示例知识库（联调用，不构成技术规程）",
+  "documents": [
+    {
+      "doc_id": "dose-rate-units",
+      "path": "docs/dose_rate_units.md",
+      "title": "剂量率单位与换算",
+      "source": "示例知识库",
+      "classification": "internal",
+      "access_scope": "all",
+      "sha256": "a06b94688bb2cf48b4c3678a5a6535a63ba03691dc8943eeae851ed0e9239f04"
+    },
+    {
+      "doc_id": "health-levels",
+      "path": "docs/health_levels.md",
+      "title": "设备健康等级判定说明",
+      "source": "示例知识库",
+      "classification": "internal",
+      "access_scope": "all",
+      "sha256": "206ca0a712150840717b9be6e1ad32945ebe8252dec000e1b8327be97b2221ef"
+    },
+    {
+      "doc_id": "data-gaps",
+      "path": "docs/data_gaps.md",
+      "title": "数据缺口处理说明",
+      "source": "示例知识库",
+      "classification": "public",
+      "access_scope": "all",
+      "sha256": "a11dc845eac98c79bae8642aa2f9a3b0e38b41165b593ee04ec72b79d97a8d0b"
+    },
+    {
+      "doc_id": "restricted-sample",
+      "path": "docs/restricted_sample.md",
+      "title": "受限访问示例文档",
+      "source": "示例知识库",
+      "classification": "internal",
+      "access_scope": "radiation_protection",
+      "sha256": "ae5a4e479954788c3d4258c4fa96e7c753d023605e37fcc945a0df3b3f59d650"
+    }
+  ]
+}

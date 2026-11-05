@@ -3,62 +3,55 @@ requires = ["hatchling>=1.24"]
 build-backend = "hatchling.build"
 
 [project]
-name = "industrial-ai"
-version = "0.1.0"
-description = "Compute-server internal API for predictive maintenance and the knowledge assistant"
+name = "radiation-agent-backend"
+version = "0.2.0"
+description = "FastAPI + LangGraph backend: radiation dose-rate data (IoTDB), RAG (Milvus + GLM), conversations (openGauss)"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
+    # API
     "fastapi>=0.115",
     "uvicorn[standard]>=0.36",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "httpx>=0.27",
+    # Agent
+    "langgraph>=1.0,<2",
+    "langchain-core>=1.0,<2",
+    "langchain-openai>=1.0,<2",
+    "langchain-text-splitters>=1.0,<2",
+    # Data stores
     "apache-iotdb>=2.0",
     "pymilvus>=2.6,<2.7",
     "psycopg[binary,pool]>=3.2",
-    "pyjwt[crypto]>=2.8",
 ]
 
-[project.scripts]
-industrial-ai-collector = "industrial_ai.collector.main:main"
-industrial-ai-kb = "industrial_ai.knowledge.cli:main"
-industrial-ai-db = "industrial_ai.storage.cli:main"
-
 [project.optional-dependencies]
-# MQTT subscription (COLLECTOR_SOURCE=mqtt) and `industrial-ai-collector publish-sim`.
 mqtt = ["aiomqtt>=2.3"]
-# PDF documents in the knowledge corpus.
 pdf = ["pypdf>=4.0"]
 dev = [
     "aiomqtt>=2.3",
-    "milvus-lite>=2.4; sys_platform != 'win32'",  # embedded Milvus for tests (no Windows build)
     "pytest>=8.0",
     "anyio>=4.4",
     "ruff>=0.5",
+    "milvus-lite>=2.4; sys_platform != 'win32'",  # embedded Milvus for tests
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/industrial_ai"]
+packages = ["app"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
-src = ["src", "tests"]
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "ASYNC"]
 
 [tool.ruff.lint.per-file-ignores]
-# Prompt text reads better unwrapped.
-"src/industrial_ai/agent/runner.py" = ["E501"]
+"app/agent/prompts.py" = ["E501"]
 
 [tool.ruff.lint.flake8-bugbear]
-# FastAPI dependency markers are designed to be used as argument defaults.
-extend-immutable-calls = [
-    "fastapi.Depends", "fastapi.Query", "fastapi.Header", "fastapi.Path", "fastapi.Body",
-]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Header", "fastapi.Path"]
