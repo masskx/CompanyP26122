@@ -4,14 +4,14 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     # env_ignore_empty: `KEY=` in .env means "use the default", not an empty string.
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore",
-                                      env_ignore_empty=True)
+                                      env_ignore_empty=True, populate_by_name=True)
 
     app_env: str = "development"
     log_level: str = "INFO"
@@ -120,6 +120,9 @@ class Settings(BaseSettings):
     embedding_provider: Literal["none", "zhipu", "local"] = "none"
     embedding_base_url: str | None = None
     embedding_api_key: SecretStr | None = None
+    # Provider-specific key, used only when EMBEDDING_PROVIDER=zhipu and EMBEDDING_API_KEY is unset.
+    glm_api_key: SecretStr | None = Field(
+        default=None, validation_alias=AliasChoices("GLM_API_KEY", "ZHIPU_API_KEY"))
     embedding_model: str = "embedding-3"
     embedding_dimensions: int | None = Field(default=1024, ge=1)  # embedding-3: 256..2048
     embedding_batch_size: int = Field(default=16, ge=1, le=64)
@@ -147,6 +150,9 @@ class Settings(BaseSettings):
     llm_provider: Literal["none", "deepseek", "vllm"] = "none"
     llm_base_url: str | None = None
     llm_api_key: SecretStr | None = None
+    # Provider-specific key, used only when LLM_PROVIDER=deepseek and LLM_API_KEY is unset.
+    deepseek_api_key: SecretStr | None = Field(
+        default=None, validation_alias=AliasChoices("DEEPSEEK_API_KEY", "DEEPSEEK_API"))
     llm_model: str | None = None
     llm_model_precision: str | None = None  # e.g. W8A8, recorded with each result
     llm_model_revision: str | None = None
@@ -169,8 +175,10 @@ class Settings(BaseSettings):
                     "LLM_PROVIDER=deepseek sends data to a public API and is not allowed when "
                     "APP_ENV=production; use LLM_PROVIDER=vllm"
                 )
-            if self.llm_api_key is None or not self.llm_api_key.get_secret_value():
-                raise ValueError("LLM_API_KEY is required for LLM_PROVIDER=deepseek")
+            if self.resolved_llm_api_key is None:
+                raise ValueError(
+                    "LLM_API_KEY (or DEEPSEEK_API_KEY / DEEPSEEK_API) is required for "
+                    "LLM_PROVIDER=deepseek")
         if self.llm_provider == "vllm" and not (self.llm_base_url and self.llm_model):
             raise ValueError("LLM_BASE_URL and LLM_MODEL are required for LLM_PROVIDER=vllm")
         return self
@@ -193,13 +201,31 @@ class Settings(BaseSettings):
                     "EMBEDDING_PROVIDER=zhipu sends text to a public API and is not allowed when "
                     "APP_ENV=production; use a private deployment (EMBEDDING_PROVIDER=local)"
                 )
-            if self.embedding_api_key is None:
-                raise ValueError("EMBEDDING_API_KEY is required for EMBEDDING_PROVIDER=zhipu")
+            if self.resolved_embedding_api_key is None:
+                raise ValueError(
+                    "EMBEDDING_API_KEY (or GLM_API_KEY / ZHIPU_API_KEY) is required for "
+                    "EMBEDDING_PROVIDER=zhipu")
         if self.embedding_provider == "local" and not self.embedding_base_url:
             raise ValueError("EMBEDDING_BASE_URL is required for EMBEDDING_PROVIDER=local")
         if self.kb_chunk_overlap >= self.kb_chunk_chars:
             raise ValueError("KB_CHUNK_OVERLAP must be smaller than KB_CHUNK_CHARS")
         return self
+
+    @property
+    def resolved_llm_api_key(self) -> str | None:
+        for key in (self.llm_api_key,
+                    self.deepseek_api_key if self.llm_provider == "deepseek" else None):
+            if key is not None and key.get_secret_value():
+                return key.get_secret_value()
+        return None
+
+    @property
+    def resolved_embedding_api_key(self) -> str | None:
+        for key in (self.embedding_api_key,
+                    self.glm_api_key if self.embedding_provider == "zhipu" else None):
+            if key is not None and key.get_secret_value():
+                return key.get_secret_value()
+        return None
 
     @property
     def resolved_embedding_base_url(self) -> str | None:

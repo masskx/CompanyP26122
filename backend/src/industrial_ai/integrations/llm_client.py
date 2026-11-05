@@ -58,7 +58,7 @@ class LLMConfig:
         assert base_url and model  # guaranteed by Settings validation
         return cls(
             provider=s.llm_provider, base_url=base_url, model=model,
-            api_key=s.llm_api_key.get_secret_value() if s.llm_api_key else None,
+            api_key=s.resolved_llm_api_key,
             precision=s.llm_model_precision, revision=s.llm_model_revision,
             timeout_seconds=s.llm_timeout_seconds, max_retries=s.llm_max_retries,
             max_concurrency=s.llm_max_concurrency, temperature=s.llm_temperature,

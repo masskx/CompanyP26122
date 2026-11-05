@@ -70,7 +70,7 @@ class EmbeddingConfig:
         return cls(
             base_url=base_url, model=s.embedding_model,
             dimensions=1024 if fixed else (s.embedding_dimensions or 2048),
-            api_key=s.embedding_api_key.get_secret_value() if s.embedding_api_key else None,
+            api_key=s.resolved_embedding_api_key,
             batch_size=s.embedding_batch_size, max_batch_chars=s.embedding_max_batch_chars,
             timeout_seconds=s.embedding_timeout_seconds, max_retries=s.embedding_max_retries,
             send_dimensions=not fixed and s.embedding_dimensions is not None,

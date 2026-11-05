@@ -195,7 +195,15 @@ OPENGAUSS_TEST_DSN="host=127.0.0.1 port=5432 dbname=industrial_ai_test user=app_
 pytest
 ```
 
-未设置相应变量时自动跳过（Milvus 相关测试始终会在内嵌的 Milvus Lite 上运行）。`OPENGAUSS_TEST_DSN` 必须指向专用测试库（每个测试前清空表）。已在 IoTDB 2.0.11、Mosquitto、Milvus 2.6.26 standalone、openGauss 7.0.0-RC3 上验证。
+未设置相应变量时自动跳过（Milvus 相关测试始终会在内嵌的 Milvus Lite 上运行）。
+
+真实 DeepSeek / 智谱 GLM 接口测试（产生费用，只发送示例文档和合成问题）：
+
+```bash
+LIVE_PROVIDER_TESTS=1 pytest tests/test_live_providers.py -s
+```
+
+密钥读取：DeepSeek 为 `LLM_API_KEY`，或 `DEEPSEEK_API_KEY` / `DEEPSEEK_API`（仅在 `LLM_PROVIDER=deepseek` 时使用）；GLM 为 `EMBEDDING_API_KEY`，或 `GLM_API_KEY` / `ZHIPU_API_KEY`（仅在 `EMBEDDING_PROVIDER=zhipu` 时使用）。`OPENGAUSS_TEST_DSN` 必须指向专用测试库（每个测试前清空表）。已在 IoTDB 2.0.11、Mosquitto、Milvus 2.6.26 standalone、openGauss 7.0.0-RC3 上验证。
 
 ## 判定阈值
 
