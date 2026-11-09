@@ -1,6 +1,8 @@
 """LangGraph agent through the HTTP API with a scripted model: tool decisions, streaming,
 citations, persistence, history and per-user sessions."""
 
+from datetime import timedelta
+
 import pytest
 from langchain_core.messages import AIMessage
 
@@ -40,39 +42,56 @@ async def test_answers_directly_without_tools(make_client, retriever):
 
 async def test_knowledge_search_with_citation(make_client, retriever):
     client, llm = await make_client([
-        tool_call("search_knowledge", {"query": "mSv/h 与 µSv/h 换算关系"}),
-        AIMessage(content="1 mSv/h 等于 1000 µSv/h [1]。"),
+        tool_call("search_knowledge", {"query": "mGy/h 与 µGy/h 换算关系"}),
+        AIMessage(content="1 mGy/h 等于 1000 µGy/h [1]。"),
     ], retriever=retriever)
-    r = await client.post("/chat", json={"message": "mSv/h 和 µSv/h 怎么换算？"}, headers=ALICE)
+    r = await client.post("/chat", json={"message": "mGy/h 和 µGy/h 怎么换算？"}, headers=ALICE)
     events = parse_sse(r.text)
-    assert ("tool", {"name": "search_knowledge", "args": {"query": "mSv/h 与 µSv/h 换算关系"}}) \
+    assert ("tool", {"name": "search_knowledge", "args": {"query": "mGy/h 与 µGy/h 换算关系"}}) \
         in events
     cites = [d for k, d in events if k == "citation"]
     assert cites[0]["ref"] == 1 and cites[0]["doc_id"] == "dose-rate-units"
     done = events[-1][1]["message"]
-    assert done["kb_version"] == "sample_2026_11_05" and done["tools_used"] == ["search_knowledge"]
+    assert done["kb_version"] == "sample_2026_11_09" and done["tools_used"] == ["search_knowledge"]
     tool_msg = llm.calls[1]["messages"][-1]
     assert tool_msg.type == "tool" and "[1]" in tool_msg.content
 
 
-async def test_device_tool_reads_iotdb(make_client):
+async def test_station_tool_reads_iotdb(make_client):
     client, llm = await make_client([
-        tool_call("get_device_status", {"device_id": "AS01-ISO-RM-02", "hours": 6}),
-        AIMessage(content="RM-02 最近6小时连续超出报警限值，判定为 inspect [1]。"),
+        tool_call("get_station_status", {"station_id": "ST01"}),
+        AIMessage(content="ST01 最新数据见 [1]。"),
     ])
-    r = await client.post("/chat", json={"message": "RM-02 怎么样", "stream": False},
+    r = await client.post("/chat", json={"message": "ST01 现在怎么样", "stream": False},
                           headers=ALICE)
     msg = r.json()["message"]
-    assert msg["citations"][0]["kind"] == "data" and msg["citations"][0]["device_id"] == \
-        "AS01-ISO-RM-02"
+    assert msg["citations"][0]["kind"] == "data" and msg["citations"][0]["device_id"] == "ST01"
     result = llm.calls[1]["messages"][-1].content
-    assert '"level": "inspect"' in result and "连续" in result
+    assert '"battery_voltage"' in result and '"dose_rate"' in result
     # Without a knowledge base the search tool is not offered and the prompt says so.
     assert "知识库当前不可用" in llm.calls[0]["messages"][0].content
 
 
+async def test_analysis_tools_read_stored_results(make_client):
+    client, llm = await make_client([
+        tool_call("get_analysis_results", {"station_id": "ST01"}),
+        AIMessage(content="昨天 ST01 有异常记录 [1]。"),
+    ])
+    r = client.resources
+    # the explanation uses no LLM call here: no LLM_PROVIDER for analysis in this test
+    r.analysis.explainer.llm = None
+    day = r.analysis.today() - timedelta(days=1)
+    await r.analysis.run_now(day)
+    out = await client.post("/chat", json={"message": "昨天哪些设备需要检修", "stream": False},
+                            headers=ALICE)
+    assert out.json()["message"]["tools_used"] == ["get_analysis_results"]
+    result = llm.calls[1]["messages"][-1].content
+    assert '"level": "inspect"' in result and '"device": "D03"' in result
+    assert "ST02" not in result.split("records")[1]  # station filter applied
+
+
 async def test_tool_rounds_are_capped(make_client, settings):
-    loops = [tool_call("list_devices", {}, f"c{i}") for i in range(settings.agent_max_tool_rounds)]
+    loops = [tool_call("list_stations", {}, f"c{i}") for i in range(settings.agent_max_tool_rounds)]
     client, llm = await make_client([*loops, AIMessage(content="结论 [1]。")])
     r = await client.post("/chat", json={"message": "x", "stream": False}, headers=ALICE)
     assert r.json()["message"]["content"] == "结论 [1]。"

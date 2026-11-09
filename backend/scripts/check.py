@@ -5,6 +5,7 @@
   python scripts/check.py --no-paid          # skip the LLM / embedding API calls
   python scripts/check.py --mqtt             # also the MQTT broker
   python scripts/check.py --api http://127.0.0.1:8000   # + end-to-end test of the server
+                                             (runs / re-uses yesterday's analysis batch)
 
 Exit code 0 when everything configured works.
 """
@@ -29,7 +30,7 @@ def check(cond: bool, msg: str) -> bool:
 
 
 def services(s, paid: bool, mqtt: bool) -> None:
-    from app.timeseries.devices import DeviceCatalog
+    from app.stations.store import load_file
     from app.timeseries.iotdb import IoTDB
 
     print(f"== IoTDB {s.iotdb_host}:{s.iotdb_port}")
@@ -37,9 +38,12 @@ def services(s, paid: bool, mqtt: bool) -> None:
     try:
         run(db.ping())
         ok("connected")
-        for d in DeviceCatalog.load(s.devices_file).all()[:3]:
-            p = run(db.latest(d.site, d.device_id, d.metrics[0].name))
-            ok(f"{d.device_id}: latest {p.value if p else '-'} at "
+        for st in load_file(s.stations_file):
+            if not st.devices:
+                continue
+            d = st.devices[0]
+            p = run(db.latest(st.station_id, d.device_id, "dose_rate"))
+            ok(f"{st.station_id}/{d.device_id}: latest {p.value if p else '-'} at "
                f"{p.time.isoformat() if p else 'no data yet (run scripts/simulate.py)'}")
     except Exception as exc:
         check(False, f"IoTDB: {exc}")
@@ -55,7 +59,10 @@ def services(s, paid: bool, mqtt: bool) -> None:
         try:
             with psycopg.connect(s.opengauss_dsn.get_secret_value(), connect_timeout=5) as c:
                 versions = [r[0] for r in c.execute("SELECT version FROM app_migrations")]
-            check("001_chat" in versions, f"connected; migrations {versions}")
+                n = c.execute("SELECT COUNT(*) FROM station_config").fetchone()[0] \
+                    if "002_station_analysis" in versions else 0
+            check({"001_chat", "002_station_analysis"} <= set(versions),
+                  f"connected; migrations {versions}; {n} stations configured")
         except Exception as exc:
             check(False, f"{exc} (run scripts/init_db.py)")
 
@@ -128,19 +135,41 @@ def api(base: str, s) -> None:
     except httpx.HTTPError as exc:
         sys.exit(f"cannot reach {base}: {exc} (start it with scripts/run.py)")
     check(h["status"] == "ok", f"health: {h['status']} {h['checks']}")
-    ov = c.get("/overview").json()
-    check(sum(ov["counts"].values()) > 0, f"overview counts {ov['counts']}")
-    dev = next((d["device_id"] for d in ov["devices"] if d["level"] == "inspect"),
-               ov["devices"][0]["device_id"])
-    a = c.get(f"/devices/{dev}/assessment", params={"hours": 6}).json()
-    check("level" in a, f"assessment {dev}: {a.get('level')}")
-    t = c.get(f"/devices/{dev}/telemetry", params={"interval": 600}).json()
-    check(len(t["points"]) > 0, f"telemetry: {len(t['points'])} buckets")
+    stations = c.get("/stations").json()
+    check(len(stations) > 0, f"stations: {[x['station_id'] for x in stations]}")
+    st = stations[0]
+    dev = st["devices"][0]["device_id"] if st["devices"] else None
+    t = c.get(f"/stations/{st['station_id']}/telemetry",
+              params={"device_id": dev, "interval": 600}).json()
+    check(len(t.get("points", [])) > 0, f"telemetry {st['station_id']}/{dev}: "
+          f"{len(t.get('points', []))} buckets")
+    status = c.get("/analysis/status").json()
+    ok(f"analysis status: yesterday={status['yesterday']} schedule={status['schedule']}")
+    r = c.post("/analysis/batches", json={})
+    check(r.status_code in (200, 202), f"POST /analysis/batches -> {r.status_code}")
+    batch = r.json()["batch"]
+    import time
+
+    for _ in range(120):
+        if batch["status"] != "running":
+            break
+        time.sleep(2)
+        batch = c.get(f"/analysis/batches/{batch['batch_id']}").json()
+    check(batch["status"] in ("succeeded", "partial"),
+          f"batch {batch['batch_id']}: {batch['status']} {batch['counts']}")
+    recs = c.get("/analysis/records", params={"batch_id": batch["batch_id"]}).json()
+    check(recs["total"] > 0 or not batch["counts"].get("devices_analysable"),
+          f"records: {recs['total']} {[(x['device_id'], x['level']) for x in recs['items']]}")
+    if recs["items"]:
+        detail = c.get(f"/analysis/records/{recs['items'][0]['record_id']}").json()
+        ex = detail.get("explanation") or {}
+        check(len(detail["events"]) > 0, f"record detail: {len(detail['events'])} events, "
+              f"explanation {ex.get('method')} confidence {ex.get('confidence')}")
 
     if h["checks"]["llm"]["status"] != "configured":
         skip("chat (LLM_PROVIDER=none)")
         return
-    r = c.post("/chat", json={"message": f"{dev} 最近6小时的剂量率情况如何？有没有异常？",
+    r = c.post("/chat", json={"message": "昨天的分析结果中哪些设备需要检修？",
                               "stream": False})
     if check(r.status_code == 200, f"chat (data question) -> {r.status_code}"):
         m = r.json()["message"]
@@ -152,7 +181,7 @@ def api(base: str, s) -> None:
         msgs = c.get(f"/sessions/{sid}/messages").json()
         check(len(msgs) == 2, "question + answer stored")
     if h["checks"]["knowledge"]["status"] == "ok":
-        r = c.post("/chat", json={"message": "剂量率单位 mSv/h 和 µSv/h 如何换算？请给出依据。",
+        r = c.post("/chat", json={"message": "剂量率单位 mGy/h 和 µGy/h 如何换算？请给出依据。",
                                   "stream": False})
         if check(r.status_code == 200, f"chat (knowledge question) -> {r.status_code}"):
             m = r.json()["message"]

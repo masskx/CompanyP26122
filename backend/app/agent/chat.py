@@ -19,9 +19,10 @@ from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langgraph.graph.state import CompiledStateGraph
 
 from app.agent.tools import TurnContext
+from app.analysis.batch import AnalysisService
 from app.db.chat_store import ChatStore, Message, NewMessage, Session
 from app.rag.retriever import Retriever
-from app.timeseries.service import DeviceService
+from app.stations.service import StationService
 
 logger = logging.getLogger(__name__)
 _REF = re.compile(r"\[(\d{1,3})\]")
@@ -36,12 +37,14 @@ class ChatError(Exception):
 
 class ChatService:
     def __init__(self, store: ChatStore, graph: CompiledStateGraph | None,
-                 devices: DeviceService, retriever: Retriever | None, *, model: str | None,
+                 stations: StationService, analysis: AnalysisService,
+                 retriever: Retriever | None, *, model: str | None,
                  history_messages: int = 20, max_input_chars: int = 4000,
                  max_tool_rounds: int = 4) -> None:
         self.store = store
         self.graph = graph
-        self.devices = devices
+        self.stations = stations
+        self.analysis = analysis
         self.retriever = retriever
         self.model = model
         self._history = history_messages
@@ -70,7 +73,8 @@ class ChatService:
     async def stream(self, user_id: str, session: Session, history: list[Message],
                      user_msg: Message) -> AsyncIterator[tuple[str, dict]]:
         assert self.graph is not None
-        ctx = TurnContext(devices=self.devices, retriever=self.retriever, user_id=user_id)
+        ctx = TurnContext(stations=self.stations, analysis=self.analysis,
+                          retriever=self.retriever, user_id=user_id)
         inputs = {"messages": [*[HumanMessage(m.content) if m.role == "user"
                                  else AIMessage(m.content)
                                  for m in history if m.status == "complete" and m.content],

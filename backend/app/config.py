@@ -3,6 +3,7 @@
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -21,8 +22,9 @@ class Settings(BaseSettings):
     api_key: SecretStr | None = None
     cors_origins: list[str] = Field(default_factory=list)
 
-    # ---- devices -----------------------------------------------------------------------
-    devices_file: Path = BASE_DIR / "data" / "devices.json"
+    # ---- stations ----------------------------------------------------------------------
+    # Seed file for the station configuration table (and simulation profiles).
+    stations_file: Path = BASE_DIR / "data" / "stations.json"
 
     # ---- Apache IoTDB ------------------------------------------------------------------
     timeseries_backend: Literal["iotdb", "memory"] = "iotdb"  # memory: demos/tests only
@@ -78,7 +80,7 @@ class Settings(BaseSettings):
     # ---- Ingestion (simulator / MQTT -> IoTDB) -------------------------------------------
     mqtt_host: str = "127.0.0.1"
     mqtt_port: int = 1883
-    mqtt_topics: list[str] = Field(default_factory=lambda: ["sim/radiation/#"])
+    mqtt_topics: list[str] = Field(default_factory=lambda: ["sim/stations/#"])
     mqtt_username: str | None = None
     mqtt_password: SecretStr | None = None
     mqtt_tls: bool = False
@@ -87,7 +89,7 @@ class Settings(BaseSettings):
     # Message format: "simulator" (built-in), "mapping" (JSON file), or "module:Class".
     ingest_parser: str = "simulator"
     ingest_mapping_file: Path | None = None
-    ingest_topic_prefix: str = "sim/radiation"
+    ingest_topic_prefix: str = "sim/stations"
     ingest_batch_size: int = 500
     ingest_flush_seconds: float = 1.0
     ingest_reject_unknown_devices: bool = True
@@ -96,9 +98,22 @@ class Settings(BaseSettings):
     simulator_backfill_hours: float = 48
     simulator_seed: int | None = 42
 
-    # ---- Rules ---------------------------------------------------------------------------
-    rule_min_completeness: float = 0.8
-    rule_consecutive_breaches: int = 3
+    # ---- Daily station analysis -----------------------------------------------------------
+    analysis_timezone: str = "Asia/Shanghai"   # defines the calendar day that is analysed
+    analysis_version: str = Field(default="v1", pattern=r"^[A-Za-z0-9_.\-]{1,32}$")
+    analysis_schedule_enabled: bool = True      # in-process daily run (single API instance)
+    analysis_run_at: str = Field(default="00:30", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    analysis_catchup_days: int = Field(default=3, ge=0, le=31)  # missed days run on restart
+    analysis_max_attempts: int = Field(default=3, ge=1, le=10)
+    analysis_retry_minutes: float = Field(default=10, gt=0)
+    analysis_consecutive_samples: int = Field(default=3, ge=1)  # samples per threshold breach
+    analysis_gap_intervals: float = Field(default=3, gt=1)  # gap > N sampling intervals
+    analysis_stuck_minutes: int = Field(default=60, ge=5)   # identical values this long
+    analysis_min_completeness: float = Field(default=0.9, ge=0, le=1)
+    analysis_fault_level: Literal["inspect", "watch"] = "inspect"  # to be confirmed
+    analysis_charge_factor: float = Field(default=1.5, gt=1)  # slow charge = factor x expected
+    analysis_max_event_values: int = Field(default=3000, ge=10)
+    analysis_use_llm: bool = True  # explanations by the LLM when LLM_PROVIDER is set
 
     @model_validator(mode="after")
     def _check(self) -> "Settings":
@@ -116,6 +131,10 @@ class Settings(BaseSettings):
                                  "production; use a private deployment (local)")
             if not self.embedding_key:
                 raise ValueError("Zhipu needs EMBEDDING_API_KEY or GLM_API_KEY / ZHIPU_API_KEY")
+        try:
+            ZoneInfo(self.analysis_timezone)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(f"unknown ANALYSIS_TIMEZONE {self.analysis_timezone!r}") from exc
         if self.embedding_provider == "local" and not self.embedding_base_url:
             raise ValueError("EMBEDDING_PROVIDER=local needs EMBEDDING_BASE_URL")
         return self

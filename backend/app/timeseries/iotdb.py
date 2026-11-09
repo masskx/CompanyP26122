@@ -1,8 +1,10 @@
 """Apache IoTDB access (tree model).
 
-Layout:  <IOTDB_ROOT>.<site>.<device_id>.<metric>
-         e.g. root.mes.`AS01`.`AS01-ISO-RM-01`.`dose_rate`
-Values are DOUBLE (dose rate in µSv/h), timestamps in milliseconds (UTC).
+Layout:  <IOTDB_ROOT>.<station_id>.<device_id>.<metric>     per device
+         <IOTDB_ROOT>.<station_id>._station.<metric>        per station (battery, shelter)
+         e.g. root.mes.`ST01`.`D02`.`dose_rate`, root.mes.`ST01`.`_station`.`battery_voltage`
+Values are DOUBLE (dose rate in µGy/h; statuses / flags as codes, see app/stations/model.py),
+timestamps in milliseconds (UTC).
 
 The IoTDB Python client is synchronous; every call runs in a worker thread.
 """
@@ -12,7 +14,7 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol
 
 from app.config import Settings
 
@@ -47,6 +49,20 @@ class Measurement:
     value: float
 
 
+class TimeSeriesStore(Protocol):
+    async def ping(self) -> None: ...
+    async def close(self) -> None: ...
+    async def write(self, batch: list[Measurement]) -> None: ...
+    async def query(self, site: str, device_id: str, metric: str, start: datetime,
+                    end: datetime, limit: int | None = None) -> list[Point]: ...
+    async def aggregate(self, site: str, device_id: str, metric: str, start: datetime,
+                        end: datetime, interval_seconds: int) -> list[Bucket]: ...
+    async def latest(self, site: str, device_id: str, metric: str) -> Point | None: ...
+    async def ensure_schema(self, series: list[tuple[str, str, str]]) -> dict[str, int]: ...
+    async def delete(self, series: list[tuple[str, str, str]]) -> int: ...
+    async def purge(self) -> None: ...
+
+
 def node(name: str) -> str:
     if not _NODE.fullmatch(name):
         raise ValueError(f"invalid IoTDB path node: {name!r}")
@@ -72,6 +88,8 @@ class IoTDB:
     def __init__(self, settings: Settings) -> None:
         self._s = settings
         self._pool: Any | None = None
+        self._limit: asyncio.Semaphore | None = None
+        self._limit_loop: Any = None
 
     def device_path(self, site: str, device_id: str) -> str:
         return f"{self._s.iotdb_root}.{node(site)}.{node(device_id)}"
@@ -97,9 +115,18 @@ class IoTDB:
         finally:
             pool.put_back(session)
 
+    def _limiter(self) -> asyncio.Semaphore:
+        """At most IOTDB_POOL_SIZE calls in flight: callers wait here (async) instead of
+        timing out inside the pool's blocking get_session()."""
+        loop = asyncio.get_running_loop()
+        if self._limit is None or self._limit_loop is not loop:
+            self._limit, self._limit_loop = asyncio.Semaphore(self._s.iotdb_pool_size), loop
+        return self._limit
+
     async def _run(self, fn: Any) -> Any:
         try:
-            return await asyncio.to_thread(self._with_session, fn)
+            async with self._limiter():
+                return await asyncio.to_thread(self._with_session, fn)
         except ValueError:
             raise
         except Exception as exc:
@@ -222,6 +249,18 @@ class IoTDB:
         return await self._run(run)
 
 
+    async def purge(self) -> None:
+        """Delete every series under IOTDB_ROOT (e.g. old demo data)."""
+        def run(session: Any) -> None:
+            try:
+                session.execute_non_query_statement(f"DELETE TIMESERIES {self._s.iotdb_root}.**")
+            except Exception as exc:
+                if "not" not in str(exc).lower():
+                    raise
+
+        await self._run(run)
+
+
 class MemoryTimeSeries:
     """In-memory stand-in with the same interface (tests and database-free demos)."""
 
@@ -272,3 +311,6 @@ class MemoryTimeSeries:
 
     async def delete(self, series) -> int:
         return sum(self.data.pop(key, None) is not None for key in series)
+
+    async def purge(self) -> None:
+        self.data.clear()
