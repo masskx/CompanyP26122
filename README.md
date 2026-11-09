@@ -136,4 +136,7 @@ SWFH-26-122Agent/
 │
 ├── .gitignore
 └── README.md
-```
+```cla
+
+设备预测性维护这部分，
+我让大模型去分析判断

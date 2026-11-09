@@ -12,6 +12,11 @@ build/
 .mypy_cache/
 .ruff_cache/
 .ipynb_checkpoints/
+artifacts/
+.archive/
+
+# 前端依赖
+node_modules/
 
 # 模型权重 / 大文件
 models/
@@ -26,14 +31,13 @@ models/
 
 # 数据与输出
 data/
-!backend/data/
 outputs/
 *.log
 
 # 密钥与环境变量
 .env
 .env.*
-!.env.example
+!frontend/.env.example
 *.pem
 *.key
 
