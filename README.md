@@ -23,8 +23,14 @@
 git clone https://cnb.cool/SWFH-26-122/SWFH-26-122Agent.git
 cd SWFH-26-122Agent
 ```
-```bash
+
+## 项目结构
+
+后端的安装、配置、启动和接口说明见 [backend/README.md](./backend/README.md)。
+
+```text
 SWFH-26-122Agent/
+<<<<<<< HEAD
 │
 ├── backend/                       # Python 后端
 │   ├── pyproject.toml             # Python 依赖及项目配置
@@ -140,3 +146,30 @@ SWFH-26-122Agent/
 
 设备预测性维护这部分，
 我让大模型去分析判断
+=======
+├── README.md
+├── docs/
+│   └── 项目规划/                 # 需求文档、设计文档
+└── backend/                      # FastAPI + LangGraph 后端
+    ├── pyproject.toml            # 依赖与项目配置
+    ├── .env.example              # 全部配置项说明（复制为 .env）
+    ├── README.md                 # 本地部署与使用说明
+    ├── app/
+    │   ├── main.py               # FastAPI 应用入口
+    │   ├── config.py             # 配置（读取 .env）
+    │   ├── deps.py               # 服务装配；get_current_user（登录接入点）
+    │   ├── api/                  # 接口：chat（对话/会话）、devices（设备/数据）、system（健康检查）
+    │   ├── agent/                # LangGraph 智能体：graph、tools、chat、llm（DeepSeek/vLLM）、prompts
+    │   ├── rag/                  # 知识库：GLM embedding、离线构建、Milvus 版本化存储、检索
+    │   ├── timeseries/           # IoTDB 访问、设备清单与规则判定、设备数据服务
+    │   ├── ingestion/            # 报文解析、模拟数据、MQTT/文件数据源、入库管道
+    │   └── db/                   # openGauss 会话存储与迁移脚本
+    ├── scripts/                  # init_db、build_knowledge、simulate、ingest_mqtt、check、run
+    ├── data/
+    │   ├── devices.json          # 设备清单（含模拟参数）
+    │   ├── knowledge/            # 示例知识库语料与 manifest
+    │   └── mqtt/                 # 真实 MQTT 报文映射示例
+    ├── deploy/                   # docker-compose：IoTDB、Milvus、openGauss、Mosquitto
+    └── tests/
+```
+>>>>>>> 77cb90787459c1b132cb0a9ced030eedd3c490a4
