@@ -9,6 +9,12 @@ sys.path.insert(0, str(BACKEND))  # works without `pip install -e .` too
 
 from app.config import Settings  # noqa: E402
 
+# Windows consoles / IDE terminals with a legacy code page (e.g. GBK) cannot print every
+# character (µ, γ); replace those instead of crashing.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(errors="replace")
+
 
 def parser(doc: str) -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=doc,

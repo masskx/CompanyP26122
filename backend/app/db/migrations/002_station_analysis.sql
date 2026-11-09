@@ -10,8 +10,8 @@ CREATE TABLE station_config (
     comm_address            VARCHAR(200),
     sampling_interval_s     INTEGER      NOT NULL CHECK (sampling_interval_s IN (30, 60, 300)),
     calibration_factor      DOUBLE PRECISION NOT NULL DEFAULT 1,
-    dose_l1                 DOUBLE PRECISION,           -- µGy/h, Level 1
-    dose_l2                 DOUBLE PRECISION,           -- µGy/h, Level 2
+    dose_l1                 DOUBLE PRECISION,           -- uGy/h, Level 1
+    dose_l2                 DOUBLE PRECISION,           -- uGy/h, Level 2
     battery_warn_v          DOUBLE PRECISION,
     battery_alarm_v         DOUBLE PRECISION,
     battery_drop_v          DOUBLE PRECISION,

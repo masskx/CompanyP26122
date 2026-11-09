@@ -20,6 +20,10 @@ from app.stations.model import Station
 
 def load_file(path: Path) -> list[Station]:
     """Stations from the seed file, including simulation profiles."""
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"station file not found: {path} (STATIONS_FILE). It ships with the repository as "
+            "backend/data/stations.json; run commands from the backend/ directory")
     raw = json.loads(path.read_text(encoding="utf-8"))
     stations = [Station.model_validate(s) for s in raw.get("stations", [])]
     ids = [s.station_id for s in stations]

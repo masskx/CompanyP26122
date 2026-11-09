@@ -134,7 +134,9 @@ class Settings(BaseSettings):
         try:
             ZoneInfo(self.analysis_timezone)
         except (ZoneInfoNotFoundError, ValueError) as exc:
-            raise ValueError(f"unknown ANALYSIS_TIMEZONE {self.analysis_timezone!r}") from exc
+            raise ValueError(f"unknown ANALYSIS_TIMEZONE {self.analysis_timezone!r} (on Windows "
+                             "the time-zone database comes from the tzdata package: "
+                             "pip install tzdata)") from exc
         if self.embedding_provider == "local" and not self.embedding_base_url:
             raise ValueError("EMBEDDING_PROVIDER=local needs EMBEDDING_BASE_URL")
         return self

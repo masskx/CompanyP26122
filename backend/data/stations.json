@@ -1,0 +1,319 @@
+{
+  "_comment": "SIMULATION ONLY. Stations, thresholds, voltages and simulation profiles are synthetic (not plant data, not alarm set-points). Replace with the real station configuration table; leave dose_l1/dose_l2 or battery_warn_v/battery_alarm_v null until the plant provides them (the analysis then records a configuration gap instead of guessing). 'simulation' blocks are read only by the simulator and never stored in openGauss. Expected analysis of yesterday with the simulator: see backend/docs/station-analysis.md (Demo scenario).",
+  "stations": [
+    {
+      "station_id": "ST01",
+      "name": "1号固定监测站（模拟）",
+      "comm_address": "10.10.1.11:502",
+      "sampling_interval_s": 30,
+      "calibration_factor": 1.0,
+      "dose_l1": 0.25,
+      "dose_l2": 0.5,
+      "battery_warn_v": 11.8,
+      "battery_alarm_v": 11.4,
+      "battery_drop_v": 0.5,
+      "battery_drop_minutes": 60,
+      "battery_charge_minutes": 120,
+      "has_rain_gauge": true,
+      "simulation": {
+        "battery": {
+          "float_v": 13.5,
+          "rest_v": 12.8,
+          "discharge_v_per_h": 0.5,
+          "charge_minutes": 120,
+          "reports_level": true
+        },
+        "shelter": {
+          "temperature": 22.0,
+          "humidity": 45.0
+        },
+        "events": [
+          {
+            "type": "rain",
+            "day": -1,
+            "start": "01:30",
+            "minutes": 150,
+            "mm_per_hour": 2.0
+          },
+          {
+            "type": "ac_loss",
+            "day": -1,
+            "start": "16:00",
+            "minutes": 150
+          },
+          {
+            "type": "door_open",
+            "day": -1,
+            "start": "16:20",
+            "minutes": 15
+          },
+          {
+            "type": "slow_charge",
+            "day": -1,
+            "start": "18:00",
+            "minutes": 60,
+            "factor": 2.5
+          }
+        ]
+      },
+      "devices": [
+        {
+          "device_id": "D01",
+          "name": "γ剂量率探测器01",
+          "simulation": {
+            "baseline": 0.085,
+            "noise": 0.04,
+            "rain_effect": 0.015
+          }
+        },
+        {
+          "device_id": "D02",
+          "name": "γ剂量率探测器02",
+          "simulation": {
+            "baseline": 0.09,
+            "noise": 0.04,
+            "rain_effect": 0.015,
+            "events": [
+              {
+                "type": "elevation",
+                "day": -1,
+                "start": "02:00",
+                "minutes": 60,
+                "level": 0.32
+              },
+              {
+                "type": "elevation",
+                "day": -1,
+                "start": "08:00",
+                "minutes": 60,
+                "level": 0.3,
+                "report_status": false
+              }
+            ]
+          }
+        },
+        {
+          "device_id": "D03",
+          "name": "γ剂量率探测器03",
+          "simulation": {
+            "baseline": 0.08,
+            "noise": 0.04,
+            "events": [
+              {
+                "type": "elevation",
+                "day": -1,
+                "start": "10:00",
+                "minutes": 30,
+                "level": 0.35
+              },
+              {
+                "type": "elevation",
+                "day": -1,
+                "start": "10:30",
+                "minutes": 40,
+                "level": 0.65
+              }
+            ]
+          }
+        },
+        {
+          "device_id": "D04",
+          "name": "γ剂量率探测器04",
+          "simulation": {
+            "baseline": 0.095,
+            "noise": 0.04,
+            "events": [
+              {
+                "type": "stuck",
+                "day": -1,
+                "start": "13:00",
+                "minutes": 180
+              }
+            ]
+          }
+        },
+        {
+          "device_id": "D05",
+          "name": "γ剂量率探测器05",
+          "simulation": {
+            "baseline": 0.088,
+            "noise": 0.04,
+            "events": [
+              {
+                "type": "offline",
+                "day": -1,
+                "start": "04:00",
+                "minutes": 90
+              },
+              {
+                "type": "gap",
+                "day": -1,
+                "start": "20:00",
+                "minutes": 20
+              }
+            ]
+          }
+        },
+        {
+          "device_id": "D06",
+          "name": "γ剂量率探测器06",
+          "simulation": {
+            "baseline": 0.082,
+            "noise": 0.04,
+            "events": [
+              {
+                "type": "fault",
+                "day": -1,
+                "start": "15:00",
+                "minutes": 45
+              }
+            ]
+          }
+        },
+        {
+          "device_id": "D07",
+          "name": "备用通道07（未启用）",
+          "enabled": false,
+          "simulation": {
+            "baseline": 0.08,
+            "noise": 0.04
+          }
+        }
+      ]
+    },
+    {
+      "station_id": "ST02",
+      "name": "2号固定监测站（模拟）",
+      "comm_address": "10.10.1.12:502",
+      "sampling_interval_s": 60,
+      "calibration_factor": 1.0,
+      "dose_l1": 0.25,
+      "dose_l2": 0.5,
+      "battery_warn_v": 11.8,
+      "battery_alarm_v": 11.4,
+      "battery_drop_v": 0.5,
+      "battery_drop_minutes": 60,
+      "battery_charge_minutes": 120,
+      "has_rain_gauge": false,
+      "simulation": {
+        "battery": {
+          "float_v": 13.5,
+          "rest_v": 12.8,
+          "discharge_v_per_h": 0.5,
+          "charge_minutes": 120,
+          "reports_level": false
+        },
+        "shelter": {
+          "temperature": 24.0,
+          "humidity": 50.0
+        },
+        "events": [
+          {
+            "type": "battery_drain",
+            "day": -1,
+            "start": "09:00",
+            "minutes": 90,
+            "v_per_h": 0.8
+          }
+        ]
+      },
+      "devices": [
+        {
+          "device_id": "D01",
+          "name": "γ剂量率探测器01",
+          "simulation": {
+            "baseline": 0.1,
+            "noise": 0.04
+          }
+        },
+        {
+          "device_id": "D02",
+          "name": "γ剂量率探测器02",
+          "simulation": {
+            "baseline": 0.11,
+            "noise": 0.04
+          }
+        },
+        {
+          "device_id": "D03",
+          "name": "γ剂量率探测器03",
+          "simulation": {
+            "baseline": 0.1,
+            "noise": 0.04,
+            "events": [
+              {
+                "type": "gap",
+                "day": -1,
+                "start": "00:00",
+                "minutes": 1440
+              }
+            ]
+          }
+        },
+        {
+          "device_id": "D04",
+          "name": "γ剂量率探测器04",
+          "simulation": {
+            "baseline": 0.105,
+            "noise": 0.04,
+            "events": [
+              {
+                "type": "comm_loss",
+                "day": -1,
+                "start": "06:00",
+                "minutes": 30
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "station_id": "ST03",
+      "name": "3号固定监测站（模拟，阈值待配置）",
+      "comm_address": "10.10.1.13:502",
+      "sampling_interval_s": 300,
+      "calibration_factor": 1.0,
+      "dose_l1": null,
+      "dose_l2": null,
+      "battery_warn_v": null,
+      "battery_alarm_v": null,
+      "has_rain_gauge": false,
+      "simulation": {
+        "battery": {
+          "reports_level": true
+        },
+        "shelter": {
+          "temperature": 20.0,
+          "humidity": 55.0
+        }
+      },
+      "devices": [
+        {
+          "device_id": "D01",
+          "name": "γ剂量率探测器01",
+          "simulation": {
+            "baseline": 0.07,
+            "noise": 0.04
+          }
+        },
+        {
+          "device_id": "D02",
+          "name": "γ剂量率探测器02",
+          "simulation": {
+            "baseline": 0.075,
+            "noise": 0.04
+          }
+        },
+        {
+          "device_id": "D03",
+          "name": "γ剂量率探测器03",
+          "simulation": {
+            "baseline": 0.072,
+            "noise": 0.04
+          }
+        }
+      ]
+    }
+  ]
+}

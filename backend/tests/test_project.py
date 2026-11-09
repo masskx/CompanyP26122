@@ -1,6 +1,7 @@
 """Project hygiene: .env.example is complete and loads; every script starts."""
 
 import re
+import shutil
 import subprocess
 import sys
 
@@ -20,6 +21,22 @@ def test_env_example_documents_every_setting():
         if not documented & set(names):
             missing.append(name.upper())
     assert missing == []
+
+
+def test_required_files_are_not_git_ignored():
+    """An ignored file is silently skipped by `git add`: a fresh clone would lack it.
+    (data/stations.json was once ignored by the root .gitignore's "data/" rule.)"""
+    if not shutil.which("git") or not (BASE_DIR.parent / ".git").exists():
+        pytest.skip("not a git checkout")
+    skip = {"__pycache__", ".venv", ".pytest_cache", ".ruff_cache"}
+    files = [str(p.relative_to(BASE_DIR)) for top in ("app", "scripts", "data", "deploy", "docs",
+                                                        "tests")
+             for p in (BASE_DIR / top).rglob("*")
+             if p.is_file() and not skip & set(p.parts)]
+    files += ["pyproject.toml", "uv.lock", "README.md", ".env.example"]
+    r = subprocess.run(["git", "check-ignore", "--stdin"], input="\n".join(files), text=True,
+                       capture_output=True, cwd=BASE_DIR)
+    assert r.stdout.split() == [], f"git ignores required files: {r.stdout.split()}"
 
 
 def test_env_example_has_no_comment_values():

@@ -33,6 +33,13 @@ async def seed(dsn: str, path, overwrite: bool) -> dict[str, str]:
         await pool.close()
 
 
+async def server_encoding(dsn: str) -> str:
+    from psycopg import AsyncConnection
+
+    async with await AsyncConnection.connect(dsn) as conn:
+        return (await (await conn.execute("SHOW server_encoding")).fetchone())[0]
+
+
 async def stations_in_db(dsn: str):
     pool = PgPool(dsn)
     try:
@@ -63,6 +70,11 @@ def main() -> None:
                     _common.ok("bootstrap: " + (", ".join(actions) or "already set up"))
                 applied = run(migrate(dsn))
                 _common.ok("migrations: " + (", ".join(applied) or "up to date"))
+                encoding = run(server_encoding(dsn))
+                if encoding.upper().replace("-", "") != "UTF8":
+                    print(f"  [WARN] database encoding is {encoding}, not UTF8: Chinese station "
+                          "names and analysis text may fail to store. Recreate the database "
+                          "with ENCODING 'UTF8' (init_db.py --admin-dsn does this for new ones)")
                 result = run(seed(dsn, s.stations_file, args.update_stations))
                 _common.ok(f"stations from {s.stations_file.name}: " +
                            ", ".join(f"{k} {v}" for k, v in result.items()))
