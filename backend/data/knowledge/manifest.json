@@ -1,5 +1,5 @@
 {
-  "version": "sample_2026_11_05",
+  "version": "sample_2026_11_09",
   "title": "示例知识库（联调用，不构成技术规程）",
   "documents": [
     {
@@ -9,16 +9,16 @@
       "source": "示例知识库",
       "classification": "internal",
       "access_scope": "all",
-      "sha256": "a06b94688bb2cf48b4c3678a5a6535a63ba03691dc8943eeae851ed0e9239f04"
+      "sha256": "a9aff7defd22c12a0443f78daa4339c01118d62501a8cc476239d8bb3d9f452f"
     },
     {
       "doc_id": "health-levels",
       "path": "docs/health_levels.md",
-      "title": "设备健康等级判定说明",
+      "title": "设备异常等级判定说明",
       "source": "示例知识库",
       "classification": "internal",
       "access_scope": "all",
-      "sha256": "206ca0a712150840717b9be6e1ad32945ebe8252dec000e1b8327be97b2221ef"
+      "sha256": "224e8aab58fe3990b9dd5c0cb0941bfbd28717aae804cb99a44e2b764fb33644"
     },
     {
       "doc_id": "data-gaps",
@@ -27,7 +27,7 @@
       "source": "示例知识库",
       "classification": "public",
       "access_scope": "all",
-      "sha256": "a11dc845eac98c79bae8642aa2f9a3b0e38b41165b593ee04ec72b79d97a8d0b"
+      "sha256": "854ce5b92d538a48c3de81f28a33f0c918a2ff1781813e517bfce0c61d0b9824"
     },
     {
       "doc_id": "restricted-sample",

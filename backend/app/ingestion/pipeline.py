@@ -145,7 +145,7 @@ class Pipeline:
     down, bounded buffer (oldest dropped and counted), per-reason rejection counts."""
 
     def __init__(self, source: Source, parser: Parser, writer: Writer, *,
-                 known_devices: set[str] | None = None, batch_size: int = 500,
+                 known_devices: set[tuple[str, str]] | None = None, batch_size: int = 500,
                  flush_seconds: float = 1.0, max_buffer: int = 100_000,
                  max_future_skew: timedelta = timedelta(minutes=5)) -> None:
         self.source, self.parser, self.writer = source, parser, writer
@@ -157,8 +157,8 @@ class Pipeline:
         self._buffer: list[Measurement] = []
 
     def _check(self, m: Measurement) -> None:
-        if self.known is not None and m.device_id not in self.known:
-            raise Rejected("unknown_device", m.device_id)
+        if self.known is not None and (m.site, m.device_id) not in self.known:
+            raise Rejected("unknown_device", f"{m.site}/{m.device_id}")
         if not math.isfinite(m.value) or (m.metric == "dose_rate" and m.value < 0):
             raise Rejected("bad_value", str(m.value))
         if m.time > datetime.now(UTC) + self.max_skew:

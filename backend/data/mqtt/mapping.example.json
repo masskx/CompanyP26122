@@ -1,15 +1,16 @@
 {
-  "_comment": "EXAMPLE ONLY: an invented vendor format showing how to describe the real MQTT format without code. Topic plant/<site>/radiation/<gateway>; each message carries a list of readings in nSv/h with ISO-8601 times; vendor device ids map to devices.json ids. Test with: python scripts/ingest_mqtt.py --file data/mqtt/captured.example.jsonl --dry-run --parser mapping --mapping data/mqtt/mapping.example.json",
-  "topic_pattern": "^plant/(?P<site>[^/]+)/radiation/(?P<gateway>[^/]+)$",
+  "_comment": "EXAMPLE ONLY: an invented vendor format showing how to describe the real MQTT format without code. Topic plant/<station>/gamma/<gateway>; each message carries a list of readings with ISO-8601 times; dose rates in nGy/h unless a unit is given; vendor states map to normal|h1|h2|fault|offline (stored, never dropped); vendor ids map to stations.json ids (device_id \"_station\" = station-level metric such as battery_voltage). Test with: python scripts/ingest_mqtt.py --file data/mqtt/captured.example.jsonl --dry-run --parser mapping --mapping data/mqtt/mapping.example.json",
+  "topic_pattern": "^plant/(?P<station>[^/]+)/gamma/(?P<gateway>[^/]+)$",
   "records_path": "readings",
-  "fields": {"device": "deviceId", "timestamp": "time", "value": "doseRate", "unit": "unit", "status": "state"},
-  "default_unit": "nSv/h",
+  "fields": {"device": "deviceId", "timestamp": "time", "value": "value", "unit": "unit", "status": "state", "metric": "metric"},
+  "default_unit": "nGy/h",
   "default_metric": "dose_rate",
-  "ok_status": ["NORMAL", "OK"],
+  "status_map": {"NORMAL": "normal", "ALARM1": "h1", "ALARM2": "h2", "FAULT": "fault", "OFFLINE": "offline"},
   "device_map": {
-    "GM-0001": {"site": "AS01", "device_id": "AS01-ISO-RM-01"},
-    "GM-0002": {"site": "AS01", "device_id": "AS01-ISO-RM-02"},
-    "ENV-A":   {"site": "AS01", "device_id": "AS01-ENV-01"}
+    "GM-0001": {"station_id": "ST01", "device_id": "D01"},
+    "GM-0002": {"station_id": "ST01", "device_id": "D02"},
+    "GM-0003": {"station_id": "ST01", "device_id": "D03"},
+    "PWR-01":  {"station_id": "ST01", "device_id": "_station"}
   },
   "unmapped_devices": "reject"
 }

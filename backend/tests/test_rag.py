@@ -86,7 +86,7 @@ async def test_build_search_rollback_and_compatibility(store):
     r1 = build(KNOWLEDGE, store, emb, chunk_size=300, overlap=40, version="v1")
     assert r1.activated and r1.previous_version is None and store.active_version() == "v1"
     retriever = Retriever(store, emb, top_k=3, min_score=0.05)
-    version, hits = await retriever.search("mSv/h 与 µSv/h 怎么换算")
+    version, hits = await retriever.search("mGy/h 与 µGy/h 怎么换算")
     assert version == "v1" and hits[0].doc_id == "dose-rate-units"
     # access_scope != "all" is never returned (no user roles yet)
     _, hits = await retriever.search("受限文档 radiation_protection 角色 过滤", top_k=10)

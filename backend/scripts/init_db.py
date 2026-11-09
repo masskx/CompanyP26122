@@ -1,13 +1,16 @@
 #!/usr/bin/env python
-"""Initialise openGauss (conversations) and IoTDB (device time series). Safe to re-run.
+"""Initialise openGauss and IoTDB. Safe to re-run.
 
   python scripts/init_db.py --admin-dsn "host=... port=... dbname=postgres user=... password=..."
-  python scripts/init_db.py                 # later runs: migrations + IoTDB schema only
+  python scripts/init_db.py                     # later runs: migrations, new stations, IoTDB series
+  python scripts/init_db.py --update-stations   # also overwrite stations from STATIONS_FILE
   python scripts/init_db.py --only iotdb
 
 openGauss: with --admin-dsn, creates the user / DBCOMPATIBILITY 'PG' database / schema from
-OPENGAUSS_DSN, then applies app/db/migrations/*.sql.
-IoTDB: creates the database and one DOUBLE series per metric of every device in DEVICES_FILE.
+OPENGAUSS_DSN; then applies app/db/migrations/*.sql (001 conversations, 002 station
+configuration + analysis batch / record / event) and inserts the stations of STATIONS_FILE
+that are not in station_config yet (existing rows are kept unless --update-stations).
+IoTDB: creates the database and the DOUBLE series of every station and device.
 The vector database is initialised separately: scripts/build_knowledge.py
 """
 
@@ -16,31 +19,53 @@ import sys
 import _common
 
 from app.db.migrate import CompatibilityError, bootstrap, migrate
+from app.db.pool import PgPool
 from app.ingestion.pipeline import run
-from app.timeseries.devices import DeviceCatalog
+from app.stations.store import PgStationStore, load_file
 from app.timeseries.iotdb import IoTDB
+
+
+async def seed(dsn: str, path, overwrite: bool) -> dict[str, str]:
+    pool = PgPool(dsn)
+    try:
+        return await PgStationStore(pool).upsert(load_file(path), overwrite=overwrite)
+    finally:
+        await pool.close()
+
+
+async def stations_in_db(dsn: str):
+    pool = PgPool(dsn)
+    try:
+        return await PgStationStore(pool).all(include_disabled=True)
+    finally:
+        await pool.close()
 
 
 def main() -> None:
     p = _common.parser(__doc__)
     p.add_argument("--admin-dsn", help="openGauss admin login (first run only)")
     p.add_argument("--only", choices=["opengauss", "iotdb"])
+    p.add_argument("--update-stations", action="store_true",
+                   help="overwrite existing station rows from STATIONS_FILE")
     args = p.parse_args()
     s = _common.settings(args)
     failed = False
+    dsn = s.opengauss_dsn.get_secret_value() if s.opengauss_dsn else None
 
     if args.only in (None, "opengauss"):
         print("== openGauss")
-        if s.opengauss_dsn is None:
-            _common.skip("OPENGAUSS_DSN not set (conversations stay in memory)")
+        if dsn is None:
+            _common.skip("OPENGAUSS_DSN not set (stations from file, results in memory)")
         else:
-            dsn = s.opengauss_dsn.get_secret_value()
             try:
                 if args.admin_dsn:
                     actions = run(bootstrap(args.admin_dsn, dsn))
                     _common.ok("bootstrap: " + (", ".join(actions) or "already set up"))
                 applied = run(migrate(dsn))
                 _common.ok("migrations: " + (", ".join(applied) or "up to date"))
+                result = run(seed(dsn, s.stations_file, args.update_stations))
+                _common.ok(f"stations from {s.stations_file.name}: " +
+                           ", ".join(f"{k} {v}" for k, v in result.items()))
             except CompatibilityError as exc:
                 _common.fail(str(exc))
                 failed = True
@@ -51,12 +76,21 @@ def main() -> None:
 
     if args.only in (None, "iotdb"):
         print(f"== IoTDB {s.iotdb_host}:{s.iotdb_port}")
-        catalog = DeviceCatalog.load(s.devices_file)
         db = IoTDB(s)
         try:
-            result = run(db.ensure_schema(catalog.series()))
-            _common.ok(f"{s.iotdb_root}: series created={result['created']} "
-                       f"existing={result['existing']}")
+            stations = load_file(s.stations_file)
+            if dsn:
+                try:
+                    known = {st.station_id for st in stations}
+                    stations += [st for st in run(stations_in_db(dsn))
+                                 if st.station_id not in known]
+                except Exception as exc:
+                    _common.skip(f"station_config not readable ({type(exc).__name__}); "
+                                 "using the file only")
+            series = [x for st in stations for x in st.series()]
+            result = run(db.ensure_schema(series))
+            _common.ok(f"{s.iotdb_root}: {len(stations)} stations, series "
+                       f"created={result['created']} existing={result['existing']}")
         except Exception as exc:
             _common.fail(f"{type(exc).__name__}: {exc}")
             failed = True

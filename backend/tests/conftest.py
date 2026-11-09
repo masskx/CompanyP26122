@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import math
@@ -10,6 +11,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 
+from app.analysis.store import MemoryAnalysisStore
 from app.config import BASE_DIR, Settings
 from app.db.chat_store import MemoryChatStore
 from app.deps import build_resources
@@ -17,10 +19,11 @@ from app.ingestion.parsers import SimulatorFormat
 from app.ingestion.pipeline import Pipeline
 from app.ingestion.simulator import SimulatedSource
 from app.main import create_app
-from app.timeseries.devices import DeviceCatalog
+from app.stations.model import Station
+from app.stations.store import MemoryStationStore, load_file
 from app.timeseries.iotdb import MemoryTimeSeries
 
-DEVICES = BASE_DIR / "data" / "devices.json"
+STATIONS = BASE_DIR / "data" / "stations.json"
 KNOWLEDGE = BASE_DIR / "data" / "knowledge"
 
 _KEYS = ("DEEPSEEK_API", "DEEPSEEK_API_KEY", "GLM_API_KEY", "ZHIPU_API_KEY", "LLM_API_KEY",
@@ -44,23 +47,35 @@ def anyio_backend():
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(_env_file=None, timeseries_backend="memory", devices_file=DEVICES)
+    return Settings(_env_file=None, timeseries_backend="memory", stations_file=STATIONS,
+                    analysis_schedule_enabled=False)
 
 
 @pytest.fixture(scope="session")
-def catalog() -> DeviceCatalog:
-    return DeviceCatalog.load(DEVICES)
+def stations() -> list[Station]:
+    return load_file(STATIONS)
 
 
-@pytest.fixture
-async def store(catalog) -> MemoryTimeSeries:
-    """48 h of simulated data for the 7 sample devices."""
+async def asimulate(stations: list[Station], hours: float, now: datetime | None = None
+                    ) -> MemoryTimeSeries:
     ts = MemoryTimeSeries()
-    now = datetime.now(UTC)
-    source = SimulatedSource(catalog.all(), backfill_hours=48, realtime=False, seed=42,
+    now = now or datetime.now(UTC)
+    source = SimulatedSource(stations, backfill_hours=hours, realtime=False, seed=42,
                              clock=lambda: now)
-    await Pipeline(source, SimulatorFormat(), ts, batch_size=5000).run()
+    await Pipeline(source, SimulatorFormat(), ts, batch_size=20_000).run()
     return ts
+
+
+def simulate(stations: list[Station], hours: float, now: datetime | None = None
+             ) -> MemoryTimeSeries:
+    return asyncio.run(asimulate(stations, hours, now))
+
+
+@pytest.fixture(scope="session")
+def store(stations) -> MemoryTimeSeries:
+    """48 h of simulated data for the sample stations; the scripted scenario is yesterday.
+    Shared by the whole session: tests must not write to it."""
+    return simulate(stations, 48)
 
 
 class FakeEmbeddings(Embeddings):
@@ -138,19 +153,30 @@ class FakeChatModel(BaseChatModel):
 
 
 @pytest.fixture
-def make_client(settings, catalog, store):
-    created = []
-
-    async def make(responses: list | None = None, retriever=None, chat_store=None):
+def make_resources(settings, stations, store):
+    def make(responses: list | None = None, retriever=None, chat_store=None, timeseries=None,
+             analysis_store=None, settings_=None):
         llm = FakeChatModel(responses=list(responses), calls=[]) if responses is not None \
             else None
-        resources = build_resources(settings, timeseries=store, catalog=catalog, llm=llm,
-                                    retriever=retriever, chat_store=chat_store or
-                                    MemoryChatStore())
-        app = create_app(settings, resources)
+        return build_resources(settings_ or settings, timeseries=timeseries or store, llm=llm,
+                               retriever=retriever, chat_store=chat_store or MemoryChatStore(),
+                               stations=MemoryStationStore(stations),
+                               analysis_store=analysis_store or MemoryAnalysisStore()), llm
+
+    return make
+
+
+@pytest.fixture
+def make_client(settings, make_resources):
+    created = []
+
+    async def make(responses: list | None = None, retriever=None, chat_store=None, **kw):
+        resources, llm = make_resources(responses, retriever, chat_store, **kw)
+        app = create_app(resources.settings, resources)
         app.state.resources = resources
         client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                    base_url="http://t/api/v1")
+        client.resources = resources
         created.append(client)
         return client, llm
 

@@ -26,7 +26,8 @@ from app.ingestion.pipeline import (
     run,
     run_until_stopped,
 )
-from app.timeseries.devices import DeviceCatalog
+from app.stations.model import STATION_NODE
+from app.stations.store import load_file
 from app.timeseries.iotdb import IoTDB
 
 
@@ -45,8 +46,10 @@ def main() -> None:
     s = _common.settings(args, mqtt_host=args.host, mqtt_port=args.port,
                          mqtt_topics=args.topics.split(",") if args.topics else None,
                          ingest_parser=args.parser, ingest_mapping_file=args.mapping)
-    known = None if args.accept_unknown_devices or not s.ingest_reject_unknown_devices else \
-        {d.device_id for d in DeviceCatalog.load(s.devices_file).all()}
+    known = None
+    if not args.accept_unknown_devices and s.ingest_reject_unknown_devices:
+        known = {(st.station_id, node) for st in load_file(s.stations_file)
+                 for node in [STATION_NODE, *(d.device_id for d in st.devices)]}
     if args.file:
         source = FileSource(args.file)
     else:

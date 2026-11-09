@@ -10,10 +10,12 @@ router = APIRouter(tags=["system"])
 
 @router.get("/health")
 async def health(r: Resources = Depends(get_resources)):
-    """Status of every dependency. 503 if IoTDB or the conversation store is down."""
+    """Status of every dependency. 503 if IoTDB, the analysis store or the conversation store
+    is down."""
     s = r.settings
     checks: dict[str, dict] = {}
-    for name, probe in (("timeseries", r.timeseries.ping), ("conversations", r.chat_store.ping)):
+    for name, probe in (("timeseries", r.timeseries.ping), ("analysis", r.analysis.store.ping),
+                        ("conversations", r.chat_store.ping)):
         try:
             await probe()
             checks[name] = {"status": "ok"}
@@ -21,10 +23,18 @@ async def health(r: Resources = Depends(get_resources)):
             checks[name] = {"status": "error", "detail": str(exc)[:200]}
     checks["timeseries"]["backend"] = s.timeseries_backend
     checks["conversations"]["backend"] = "opengauss" if s.opengauss_dsn else "memory"
+    checks["analysis"]["backend"] = "opengauss" if s.opengauss_dsn else "memory"
+    try:
+        checks["stations"] = {"status": "ok", "count": len(await r.stations.all())}
+    except Exception as exc:
+        checks["stations"] = {"status": "error", "detail": str(exc)[:200]}
     checks["knowledge"] = await r.retriever.status() if r.retriever else {"status": "disabled"}
     checks["llm"] = {"status": "configured" if r.chat.graph else "disabled",
                      "model": r.chat.model}
-    ok = all(checks[k]["status"] == "ok" for k in ("timeseries", "conversations"))
+    checks["scheduler"] = {"status": "running" if r.scheduler else "disabled",
+                           "run_at": s.analysis_run_at, "timezone": s.analysis_timezone}
+    ok = all(checks[k]["status"] == "ok" for k in ("timeseries", "analysis", "conversations",
+                                                    "stations"))
     return JSONResponse({"status": "ok" if ok else "degraded", "checks": checks},
                         status_code=200 if ok else 503)
 

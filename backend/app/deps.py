@@ -1,5 +1,8 @@
 """Builds every service from settings once at startup; routes get them via `get_resources`.
 
+openGauss (OPENGAUSS_DSN) holds station configuration, analysis results and conversations;
+without it the station file is used and everything else stays in memory (demos, tests).
+
 `get_current_user` is the single place that decides who the end user is. There is no login
 yet: it returns the optional X-User-Id header (identification only, NOT authentication) or
 "anonymous". When the client application adds login, verify its token here and return the
@@ -10,6 +13,7 @@ import logging
 import re
 import secrets
 from dataclasses import dataclass
+from zoneinfo import ZoneInfo
 
 from fastapi import Header, HTTPException, Request
 
@@ -17,14 +21,18 @@ from app.agent.chat import ChatService
 from app.agent.graph import build_graph
 from app.agent.llm import build_llm, model_label
 from app.agent.tools import ALL_TOOLS, DATA_TOOLS
+from app.analysis.batch import AnalysisService, Scheduler
+from app.analysis.explain import Explainer
+from app.analysis.store import AnalysisStore, MemoryAnalysisStore, PgAnalysisStore
 from app.config import Settings
 from app.db.chat_store import ChatStore, MemoryChatStore, PgChatStore
+from app.db.pool import PgPool
 from app.rag.embeddings import GLMEmbeddings
 from app.rag.retriever import Retriever
 from app.rag.store import KnowledgeStore
-from app.timeseries.devices import DeviceCatalog
-from app.timeseries.iotdb import IoTDB, MemoryTimeSeries
-from app.timeseries.service import DeviceService, TimeSeriesStore
+from app.stations.service import StationService
+from app.stations.store import MemoryStationStore, PgStationStore, StationStore
+from app.timeseries.iotdb import IoTDB, MemoryTimeSeries, TimeSeriesStore
 
 logger = logging.getLogger(__name__)
 _USER_ID = re.compile(r"^[\w.@:\-]{1,128}$")
@@ -34,32 +42,44 @@ _USER_ID = re.compile(r"^[\w.@:\-]{1,128}$")
 class Resources:
     settings: Settings
     timeseries: TimeSeriesStore
-    devices: DeviceService
+    stations: StationStore
+    station_data: StationService
+    analysis: AnalysisService
     chat_store: ChatStore
     chat: ChatService
     retriever: Retriever | None = None
     knowledge: KnowledgeStore | None = None
+    pool: PgPool | None = None
+    scheduler: Scheduler | None = None  # set by the app lifespan when scheduling is on
 
     async def close(self) -> None:
+        await self.analysis.close()
         await self.timeseries.close()
         await self.chat_store.close()
+        await self.stations.close()
+        await self.analysis.store.close()
+        if self.pool is not None:
+            await self.pool.close()
         if self.knowledge is not None:
             self.knowledge.close()
 
 
 def build_resources(s: Settings, *, timeseries: TimeSeriesStore | None = None,
                     chat_store: ChatStore | None = None, llm=None,
-                    retriever: Retriever | None = None, catalog: DeviceCatalog | None = None
-                    ) -> Resources:
-    catalog = catalog or DeviceCatalog.load(s.devices_file)
+                    retriever: Retriever | None = None, stations: StationStore | None = None,
+                    analysis_store: AnalysisStore | None = None) -> Resources:
     if timeseries is None:
         timeseries = IoTDB(s) if s.timeseries_backend == "iotdb" else MemoryTimeSeries()
+    dsn = s.opengauss_dsn.get_secret_value() if s.opengauss_dsn is not None else None
+    pool = PgPool(dsn) if dsn and (stations is None or analysis_store is None) else None
+    if dsn is None:
+        logger.warning("OPENGAUSS_DSN not set: station configuration from %s, analysis results "
+                       "and conversations kept in memory only", s.stations_file)
+    stations = stations or (PgStationStore(pool) if pool else
+                            MemoryStationStore.from_file(s.stations_file))
+    analysis_store = analysis_store or (PgAnalysisStore(pool) if pool else MemoryAnalysisStore())
     if chat_store is None:
-        if s.opengauss_dsn is not None:
-            chat_store = PgChatStore(s.opengauss_dsn.get_secret_value())
-        else:
-            logger.warning("OPENGAUSS_DSN not set: conversations are kept in memory only")
-            chat_store = MemoryChatStore()
+        chat_store = PgChatStore(dsn) if dsn else MemoryChatStore()
     knowledge = None
     if retriever is None and s.milvus_uri:
         embeddings = GLMEmbeddings.from_settings(s)
@@ -71,15 +91,19 @@ def build_resources(s: Settings, *, timeseries: TimeSeriesStore | None = None,
             retriever = Retriever(knowledge, embeddings, top_k=s.kb_top_k,
                                   min_score=s.kb_min_score, pinned_version=s.kb_version,
                                   classifications=tuple(s.kb_classifications))
-    devices = DeviceService(catalog, timeseries, s)
+    station_data = StationService(stations, timeseries)
     llm = llm if llm is not None else build_llm(s)
+    explainer = Explainer(llm, model_label(s) or ("fake" if llm is not None else None),
+                          ZoneInfo(s.analysis_timezone), use_llm=s.analysis_use_llm)
+    analysis = AnalysisService(analysis_store, stations, timeseries, explainer, s)
     graph = build_graph(llm, ALL_TOOLS if retriever else DATA_TOOLS,
                         max_tool_rounds=s.agent_max_tool_rounds) if llm is not None else None
-    chat = ChatService(chat_store, graph, devices, retriever, model=model_label(s),
-                       history_messages=s.agent_history_messages,
+    chat = ChatService(chat_store, graph, station_data, analysis, retriever,
+                       model=model_label(s), history_messages=s.agent_history_messages,
                        max_input_chars=s.agent_max_input_chars,
                        max_tool_rounds=s.agent_max_tool_rounds)
-    return Resources(s, timeseries, devices, chat_store, chat, retriever, knowledge)
+    return Resources(s, timeseries, stations, station_data, analysis, chat_store, chat,
+                     retriever, knowledge, pool)
 
 
 def get_resources(request: Request) -> Resources:
