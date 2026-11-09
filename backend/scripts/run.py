@@ -15,7 +15,7 @@ import uvicorn
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=8000)
     p.add_argument("--reload", action="store_true")
     a = p.parse_args()
