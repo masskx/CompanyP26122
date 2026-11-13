@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { init, use, type EChartsCoreOption } from 'echarts/core'
-import { BarChart, LineChart } from 'echarts/charts'
+import { BarChart, ScatterChart } from 'echarts/charts'
 import {
   GridComponent,
   LegendComponent,
@@ -11,7 +11,7 @@ import { CanvasRenderer } from 'echarts/renderers'
 
 use([
   BarChart,
-  LineChart,
+  ScatterChart,
   GridComponent,
   LegendComponent,
   TooltipComponent,
@@ -21,6 +21,7 @@ use([
 const props = defineProps<{
   option: EChartsCoreOption
   label: string
+  height?: string
 }>()
 
 const chartElement = ref<HTMLElement | null>(null)
@@ -56,12 +57,17 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="chartElement" class="echart" role="img" :aria-label="label"></div>
+  <div
+    ref="chartElement"
+    class="echart"
+    role="img"
+    :aria-label="label"
+    :style="{ height: height ?? '270px' }"
+  ></div>
 </template>
 
 <style scoped>
 .echart {
   width: 100%;
-  height: 270px;
 }
 </style>

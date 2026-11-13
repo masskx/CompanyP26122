@@ -13,25 +13,30 @@ export type EventSource =
   | 'run_trend'
   | 'device_alarm'
 
-export type AiFeedbackRating = 'accurate' | 'needs_revision'
-
-export type ConfirmationDecision = 'accepted' | 'rejected'
-
-export type DialogTab = 'analysis' | 'confirmation'
+export type ReviewOutcome = 'accurate' | 'needs_revision'
 
 export interface MaintenanceFilters {
+  siteId: string
   equipmentType: EquipmentFilter
   keyword: string
 }
 
 export interface TimeSeriesPoint {
   time: string
-  value: number
+  value: number | null
+}
+
+export type DetectorTrendPeriod = 'current24h' | 'lastMonth' | 'lastYear'
+
+export interface DetectorPeriodTrend {
+  doseRate: TimeSeriesPoint[]
+  rainfall: TimeSeriesPoint[]
 }
 
 export interface DetectorTrend {
-  doseRate: TimeSeriesPoint[]
-  rainfall: TimeSeriesPoint[]
+  current24h: DetectorPeriodTrend
+  lastMonth: DetectorPeriodTrend
+  lastYear: DetectorPeriodTrend
 }
 
 export interface BackupTrend {
@@ -41,43 +46,77 @@ export interface BackupTrend {
   historicalRuntimeHours: number
 }
 
-export interface AnalysisEvidence {
-  source: string
+export type ExplanationSource = 'model' | 'template'
+
+export type FindingSeverity = 'watch' | 'inspect'
+
+export type ActionPriority = 'primary' | 'secondary'
+
+export interface AnalysisFinding {
+  ruleId: string
+  code: string
+  severity: FindingSeverity
   metric: string
-  timeRange: string
-  observation: string
+  observed: number | null
+  baseline: number | null
+  changePercent: number | null
+  window: string
+  message: string
+  sourceRefs: string[]
 }
 
-export interface AnalysisRecommendation {
-  priority: 'high' | 'medium' | 'low'
-  action: string
-  rationale: string
+export interface AnalysisAction {
+  actionCode: string
+  priority: ActionPriority
+  text: string
   requiresHumanConfirmation: boolean
 }
 
+export interface AnalysisLimitation {
+  code: string
+  text: string
+  affects: string
+}
+
+export interface AnalysisDataSnapshot {
+  window: {
+    start: string
+    end: string
+  }
+  dataAsOf: string
+  sampleCount: number
+  completeness: number
+  missingRate: number
+}
+
+export interface AnalysisVersions {
+  ruleSet: string
+  actionCatalog: string
+  prompt: string
+  model: {
+    name: string
+    precision: string
+    revision: string
+  }
+}
+
 export interface AiAnalysis {
-  summary: string
-  evidence: AnalysisEvidence[]
-  recommendations: AnalysisRecommendation[]
-  dataGaps: string[]
-  followUp: string
-  confidence: number
-  modelName: string
-  modelPrecision: string
+  explanation: string
+  explanationSource: ExplanationSource
+  findings: AnalysisFinding[]
+  actions: AnalysisAction[]
+  limitations: AnalysisLimitation[]
+  dataSnapshot: AnalysisDataSnapshot
+  versions: AnalysisVersions
   generatedAt: string
 }
 
-export interface AiFeedback {
-  rating: AiFeedbackRating
+export interface HumanReview {
+  outcome: ReviewOutcome
   comment: string
-  submittedAt: string
-}
-
-export interface HumanConfirmation {
-  decision: ConfirmationDecision
-  comment: string
-  confirmedAt: string
-  confirmedBy: string
+  reviewedAt: string
+  reviewedBy: string
+  updatedAt?: string
 }
 
 export interface MaintenanceEvent {
@@ -95,8 +134,7 @@ export interface MaintenanceEvent {
   detectorTrend: DetectorTrend
   backupTrend: BackupTrend
   aiAnalysis: AiAnalysis
-  aiFeedback?: AiFeedback
-  confirmation?: HumanConfirmation
+  review?: HumanReview
 }
 
 export const equipmentTypeLabels: Record<EquipmentType, string> = {
@@ -116,15 +154,7 @@ export const eventSourceLabels: Record<EventSource, string> = {
   device_alarm: '设备报警',
 }
 
-export const aiFeedbackLabels: Record<AiFeedbackRating, string> = {
+export const reviewOutcomeLabels: Record<ReviewOutcome, string> = {
   accurate: '准确',
   needs_revision: '需修正',
-}
-
-export const confirmationDecisionLabels: Record<
-  ConfirmationDecision,
-  string
-> = {
-  accepted: '认可 AI 分析并归档',
-  rejected: '不认可 AI 分析，记录人工结论',
 }

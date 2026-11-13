@@ -4,15 +4,14 @@ import { createDemoEvents } from '../fixtures/demoEvents'
 import {
   equipmentTypeLabels,
   eventSourceLabels,
-  type AiFeedbackRating,
-  type ConfirmationDecision,
-  type DialogTab,
   type MaintenanceEvent,
   type MaintenanceFilters,
   type MaintenanceTab,
+  type ReviewOutcome,
 } from '../types'
 
 const DEFAULT_FILTERS: MaintenanceFilters = {
+  siteId: 'all',
   equipmentType: 'all',
   keyword: '',
 }
@@ -21,7 +20,6 @@ export const useMaintenanceStore = defineStore('maintenance', () => {
   const events = ref<MaintenanceEvent[]>(createDemoEvents())
   const activeTab = ref<MaintenanceTab>('pending')
   const selectedEventId = ref<string | null>(null)
-  const dialogTab = ref<DialogTab>('analysis')
   const notice = ref<string | null>(null)
   const filters = reactive<MaintenanceFilters>({ ...DEFAULT_FILTERS })
   let noticeTimer: ReturnType<typeof setTimeout> | undefined
@@ -39,11 +37,34 @@ export const useMaintenanceStore = defineStore('maintenance', () => {
       events.value.find((event) => event.id === selectedEventId.value) ?? null,
   )
 
+  const siteOptions = computed(() => {
+    const sitesById = new Map<string, string>()
+
+    for (const event of events.value) {
+      if (!sitesById.has(event.siteId)) {
+        sitesById.set(event.siteId, event.siteName)
+      }
+    }
+
+    return Array.from(sitesById, ([value, name]) => ({
+      value,
+      label: `${value} · ${name}`,
+    })).sort((left, right) =>
+      left.value.localeCompare(right.value, 'zh-CN', {
+        numeric: true,
+        sensitivity: 'base',
+      }),
+    )
+  })
+
   const filteredEvents = computed(() => {
     const keyword = filters.keyword.trim().toLocaleLowerCase('zh-CN')
 
     return events.value
       .filter((event) => event.status === activeTab.value)
+      .filter(
+        (event) => filters.siteId === 'all' || event.siteId === filters.siteId,
+      )
       .filter(
         (event) =>
           filters.equipmentType === 'all' ||
@@ -96,39 +117,17 @@ export const useMaintenanceStore = defineStore('maintenance', () => {
     Object.assign(filters, DEFAULT_FILTERS)
   }
 
-  function openEvent(eventId: string, tab: DialogTab = 'analysis') {
+  function openEvent(eventId: string) {
     selectedEventId.value = eventId
-    dialogTab.value = tab
   }
 
   function closeEvent() {
     selectedEventId.value = null
-    dialogTab.value = 'analysis'
   }
 
-  function saveAiFeedback(
+  function submitReview(
     eventId: string,
-    rating: AiFeedbackRating,
-    comment: string,
-  ): boolean {
-    const event = events.value.find((item) => item.id === eventId)
-
-    if (!event) {
-      return false
-    }
-
-    event.aiFeedback = {
-      rating,
-      comment: comment.trim(),
-      submittedAt: new Date().toISOString(),
-    }
-    showNotice('AI 结论评价已保存')
-    return true
-  }
-
-  function confirmEvent(
-    eventId: string,
-    decision: ConfirmationDecision,
+    outcome: ReviewOutcome,
     comment: string,
   ): boolean {
     const event = events.value.find((item) => item.id === eventId)
@@ -136,21 +135,48 @@ export const useMaintenanceStore = defineStore('maintenance', () => {
 
     if (
       !event ||
-      event.status !== 'pending' ||
-      (decision === 'rejected' && !normalizedComment)
+      event.status !== 'pending'
     ) {
       return false
     }
 
+    const reviewedAt = new Date().toISOString()
     event.status = 'confirmed'
-    event.confirmation = {
-      decision,
+    event.review = {
+      outcome,
       comment: normalizedComment,
-      confirmedAt: new Date().toISOString(),
-      confirmedBy: '值班操作员',
+      reviewedAt,
+      reviewedBy: '值班操作员',
     }
     closeEvent()
-    showNotice('人工确认已提交，工单已归档')
+    showNotice('人工审核已提交，事件已归档')
+    return true
+  }
+
+  function updateReview(
+    eventId: string,
+    outcome: ReviewOutcome,
+    comment: string,
+  ): boolean {
+    const event = events.value.find((item) => item.id === eventId)
+
+    if (
+      !event ||
+      event.status !== 'confirmed' ||
+      !event.review
+    ) {
+      return false
+    }
+
+    const normalizedComment = comment.trim()
+    const updatedAt = new Date().toISOString()
+    event.review = {
+      ...event.review,
+      outcome,
+      comment: normalizedComment,
+      updatedAt,
+    }
+    showNotice('已确认审核记录已更新')
     return true
   }
 
@@ -159,17 +185,17 @@ export const useMaintenanceStore = defineStore('maintenance', () => {
     activeTab,
     selectedEventId,
     selectedEvent,
-    dialogTab,
     notice,
     filters,
     pendingCount,
     confirmedCount,
+    siteOptions,
     filteredEvents,
     setActiveTab,
     resetFilters,
     openEvent,
     closeEvent,
-    saveAiFeedback,
-    confirmEvent,
+    submitReview,
+    updateReview,
   }
 })

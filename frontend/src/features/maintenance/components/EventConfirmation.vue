@@ -2,10 +2,9 @@
 import { computed, ref, watch } from 'vue'
 import { useMaintenanceStore } from '../stores/maintenance'
 import {
-  aiFeedbackLabels,
-  confirmationDecisionLabels,
-  type ConfirmationDecision,
   type MaintenanceEvent,
+  type ReviewOutcome,
+  reviewOutcomeLabels,
 } from '../types'
 import { formatDateTime } from '../utils'
 
@@ -14,42 +13,65 @@ const props = defineProps<{
 }>()
 
 const maintenance = useMaintenanceStore()
-const decision = ref<ConfirmationDecision | null>(
-  props.event.confirmation?.decision ?? null,
+const outcome = ref<ReviewOutcome | null>(
+  props.event.review?.outcome ?? null,
 )
-const comment = ref(props.event.confirmation?.comment ?? '')
+const comment = ref(props.event.review?.comment ?? '')
+const isEditing = ref(false)
 
-const isConfirmed = computed(() => props.event.status === 'confirmed')
-const needsComment = computed(
-  () => decision.value === 'rejected' && !comment.value.trim(),
-)
+const isReviewed = computed(() => props.event.status === 'confirmed')
 const canSubmit = computed(
-  () =>
-    !isConfirmed.value &&
-    Boolean(decision.value) &&
-    !needsComment.value,
+  () => Boolean(outcome.value) && (!isReviewed.value || isEditing.value),
 )
 
 watch(
   () => props.event.id,
   () => {
-    decision.value = props.event.confirmation?.decision ?? null
-    comment.value = props.event.confirmation?.comment ?? ''
+    outcome.value = props.event.review?.outcome ?? null
+    comment.value = props.event.review?.comment ?? ''
+    isEditing.value = false
   },
 )
 
-function submitConfirmation() {
-  if (!decision.value || !canSubmit.value) {
+function startEditing() {
+  if (!props.event.review) {
     return
   }
 
-  maintenance.confirmEvent(props.event.id, decision.value, comment.value)
+  outcome.value = props.event.review.outcome
+  comment.value = props.event.review.comment
+  isEditing.value = true
+}
+
+function cancelEditing() {
+  outcome.value = props.event.review?.outcome ?? null
+  comment.value = props.event.review?.comment ?? ''
+  isEditing.value = false
+}
+
+function submitReview() {
+  if (!outcome.value || !canSubmit.value) {
+    return
+  }
+
+  if (isEditing.value) {
+    if (maintenance.updateReview(
+      props.event.id,
+      outcome.value,
+      comment.value,
+    )) {
+      isEditing.value = false
+    }
+    return
+  }
+
+  maintenance.submitReview(props.event.id, outcome.value, comment.value)
 }
 </script>
 
 <template>
-  <div class="confirmation-panel">
-    <template v-if="isConfirmed && event.confirmation">
+  <div class="confirmation-panel" :data-status="event.status">
+    <template v-if="isReviewed && event.review && !isEditing">
       <section class="confirmed-summary" aria-labelledby="confirmed-title">
         <span class="confirmed-summary__icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none">
@@ -63,119 +85,121 @@ function submitConfirmation() {
           </svg>
         </span>
         <div>
-          <h3 id="confirmed-title">该工单已完成人工确认</h3>
+          <h3 id="confirmed-title">该事件已完成人工审核</h3>
           <p>
-            {{ confirmationDecisionLabels[event.confirmation.decision] }}
+            AI 结论评价：{{ reviewOutcomeLabels[event.review.outcome] }}
+            <template v-if="event.review.updatedAt">
+              · 最后修改
+              {{ formatDateTime(event.review.updatedAt) }}
+            </template>
           </p>
         </div>
+        <button
+          type="button"
+          class="confirmed-summary__edit"
+          @click="startEditing"
+        >
+          修改审核记录
+        </button>
       </section>
 
       <dl class="confirmation-record">
         <div>
-          <dt>确认结论</dt>
-          <dd>{{ confirmationDecisionLabels[event.confirmation.decision] }}</dd>
+          <dt>审核结论</dt>
+          <dd>{{ reviewOutcomeLabels[event.review.outcome] }}</dd>
         </div>
         <div>
-          <dt>确认意见</dt>
-          <dd>{{ event.confirmation.comment || '未填写补充说明' }}</dd>
+          <dt>审核意见</dt>
+          <dd>{{ event.review.comment || '未填写补充说明' }}</dd>
         </div>
         <div>
-          <dt>确认人</dt>
-          <dd>{{ event.confirmation.confirmedBy }}</dd>
+          <dt>审核人</dt>
+          <dd>{{ event.review.reviewedBy }}</dd>
         </div>
         <div>
-          <dt>确认时间</dt>
-          <dd>{{ formatDateTime(event.confirmation.confirmedAt) }}</dd>
+          <dt>审核时间</dt>
+          <dd>{{ formatDateTime(event.review.reviewedAt) }}</dd>
         </div>
       </dl>
     </template>
 
     <template v-else>
       <header class="confirmation-panel__heading">
-        <span>HUMAN CONFIRMATION</span>
-        <h3>确认本次事件分析</h3>
-        <p>
-          确认仅针对 {{ event.eventNumber }}，不会改变该站点其他工单的分析状态。
-        </p>
+        <h3 id="confirmation-title">
+          {{ isEditing ? '修改审核记录' : '人工审核与归档' }}
+        </h3>
       </header>
 
-      <div class="ai-feedback-summary">
-        <div>
-          <span>AI 结论评价</span>
-          <strong v-if="event.aiFeedback">
-            {{ aiFeedbackLabels[event.aiFeedback.rating] }}
-          </strong>
-          <strong v-else>尚未评价</strong>
-        </div>
-        <p v-if="event.aiFeedback?.comment">
-          {{ event.aiFeedback.comment }}
-        </p>
-        <p v-else>
-          可在“分析详情”中标识 AI 结论是否准确，再提交人工确认。
-        </p>
-      </div>
-
       <fieldset class="confirmation-choice">
-        <legend>人工确认结论</legend>
+        <legend>人工审核结论</legend>
         <label
           class="confirmation-card"
-          :class="{ 'confirmation-card--selected': decision === 'accepted' }"
+          :class="{ 'confirmation-card--selected': outcome === 'accurate' }"
         >
           <input
-            v-model="decision"
+            v-model="outcome"
             type="radio"
-            value="accepted"
-            name="confirmation-decision"
+            value="accurate"
+            name="review-outcome"
           />
           <span class="confirmation-card__mark" aria-hidden="true"></span>
           <span>
-            <b>认可本次 AI 分析</b>
-            <small>确认分析依据和结论后归档</small>
+            <b>确认 AI 结论准确</b>
           </span>
         </label>
         <label
           class="confirmation-card"
-          :class="{ 'confirmation-card--selected': decision === 'rejected' }"
+          :class="{ 'confirmation-card--selected': outcome === 'needs_revision' }"
         >
           <input
-            v-model="decision"
+            v-model="outcome"
             type="radio"
-            value="rejected"
-            name="confirmation-decision"
+            value="needs_revision"
+            name="review-outcome"
           />
           <span class="confirmation-card__mark" aria-hidden="true"></span>
           <span>
-            <b>不认可本次 AI 分析</b>
-            <small>记录人工判断和后续处理结论</small>
+            <b>AI 结论需修正</b>
           </span>
         </label>
       </fieldset>
 
       <label class="confirmation-comment">
         <span>
-          确认说明
-          <small>{{ decision === 'rejected' ? '必填' : '选填' }}</small>
+          审核说明
+          <small>选填</small>
         </span>
         <textarea
           v-model="comment"
           rows="5"
           maxlength="500"
-          placeholder="填写现场核查情况、人工判断或其他需要保留的说明"
+          placeholder="填写核查情况或人工判断（选填）"
         ></textarea>
-        <em v-if="needsComment">不认可 AI 分析时，请填写人工确认结论。</em>
       </label>
 
       <div class="confirmation-footer">
-        <p>
-          提交后工单将移入“已确认记录”，AI 分析结果不会触发设备控制或自动工单流转。
-        </p>
-        <button
-          type="button"
-          :disabled="!canSubmit"
-          @click="submitConfirmation"
-        >
-          提交人工确认
-        </button>
+        <p v-if="isEditing">修改仅更新审核结论和说明。</p>
+        <div class="confirmation-footer__actions">
+          <button
+            v-if="isEditing"
+            type="button"
+            class="secondary"
+            @click="cancelEditing"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            :disabled="!canSubmit"
+            @click="submitReview"
+          >
+            {{
+              isEditing
+                ? '保存修改'
+                : '确认'
+            }}
+          </button>
+        </div>
       </div>
     </template>
   </div>
@@ -183,37 +207,34 @@ function submitConfirmation() {
 
 <style scoped>
 .confirmation-panel {
-  display: grid;
-  gap: 18px;
-  max-width: 860px;
-  margin: 0 auto;
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  gap: 14px;
 }
 
-.confirmation-panel__heading > span {
-  color: #8aa0b1;
-  font-size: 9px;
-  letter-spacing: 1.45px;
+.confirmation-panel[data-status="pending"] {
+  height: 100%;
 }
 
 .confirmation-panel__heading h3 {
-  margin: 6px 0 7px;
+  margin: 0;
   color: #2b4f6c;
   font-size: 18px;
-  font-weight: 600;
+  font-weight: 650;
 }
 
-.confirmation-panel__heading p {
-  margin: 0;
-  color: #7f93a3;
-  font-size: 12px;
-  line-height: 1.7;
+.confirmation-panel__heading {
+  padding-bottom: 10px;
+  border-bottom: 1px solid #edf2f5;
 }
 
 .confirmed-summary {
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 17px 18px;
+  padding: 16px 17px;
   border: 1px solid #d9e9e2;
   border-radius: 8px;
   background: #f3faf7;
@@ -238,14 +259,32 @@ function submitConfirmation() {
 .confirmed-summary h3 {
   margin: 0;
   color: #316e59;
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 15px;
+  font-weight: 650;
 }
 
 .confirmed-summary p {
-  margin: 5px 0 0;
+  margin: 6px 0 0;
   color: #6e8f81;
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.confirmed-summary__edit {
+  min-height: 36px;
+  margin-left: auto;
+  padding: 0 11px;
+  border: 1px solid #a9c9bb;
+  border-radius: 5px;
+  background: #fff;
+  color: #39745e;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.confirmed-summary__edit:hover {
+  border-color: #6fa78e;
+  background: #f8fcfa;
 }
 
 .confirmation-record {
@@ -258,7 +297,7 @@ function submitConfirmation() {
 }
 
 .confirmation-record > div {
-  padding: 16px 18px;
+  padding: 14px 16px;
   border-right: 1px solid #e6edf3;
   border-bottom: 1px solid #e6edf3;
 }
@@ -272,74 +311,38 @@ function submitConfirmation() {
 }
 
 .confirmation-record dt {
-  color: #8a9dab;
-  font-size: 10px;
+  color: #65798b;
+  font-size: 12px;
 }
 
 .confirmation-record dd {
-  margin: 7px 0 0;
+  margin: 8px 0 0;
   color: #3c5e76;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.7;
-}
-
-.ai-feedback-summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-  padding: 13px 15px;
-  border: 1px solid #dfe8ef;
-  border-radius: 7px;
-  background: #f8fbfd;
-}
-
-.ai-feedback-summary > div {
-  display: flex;
-  flex: none;
-  align-items: baseline;
-  gap: 9px;
-}
-
-.ai-feedback-summary span {
-  color: #7f94a4;
-  font-size: 10px;
-}
-
-.ai-feedback-summary strong {
-  color: #315d7e;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.ai-feedback-summary p {
-  margin: 0;
-  color: #7f93a2;
-  font-size: 11px;
-  line-height: 1.6;
-  text-align: right;
 }
 
 .confirmation-choice {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 11px;
+  gap: 10px;
   margin: 0;
   padding: 0;
   border: 0;
 }
 
 .confirmation-choice legend {
-  margin-bottom: 9px;
-  color: #516d81;
-  font-size: 11px;
+  margin-bottom: 10px;
+  color: #486579;
+  font-size: 12px;
 }
 
 .confirmation-card {
   display: flex;
+  min-height: 58px;
   align-items: center;
-  gap: 11px;
-  padding: 15px;
+  gap: 9px;
+  padding: 12px;
   border: 1px solid #d8e4ed;
   border-radius: 8px;
   background: #fff;
@@ -378,50 +381,45 @@ function submitConfirmation() {
   background: #176cc0;
 }
 
-.confirmation-card b,
-.confirmation-card small {
-  display: block;
-}
-
 .confirmation-card b {
+  display: block;
   color: #365a74;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.confirmation-card small {
-  margin-top: 5px;
-  color: #879aa9;
-  font-size: 10px;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.45;
 }
 
 .confirmation-comment {
   position: relative;
-  display: block;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
 }
 
 .confirmation-comment > span {
   display: block;
   margin-bottom: 8px;
-  color: #516d81;
-  font-size: 11px;
+  color: #486579;
+  font-size: 12px;
 }
 
 .confirmation-comment > span small {
-  color: #9aa9b5;
+  color: #65798b;
 }
 
 .confirmation-comment textarea {
   width: 100%;
-  min-height: 116px;
-  resize: vertical;
-  padding: 11px 12px;
+  min-height: 120px;
+  flex: 1;
+  resize: none;
+  padding: 12px 13px;
   border: 1px solid #d3dfe8;
   border-radius: 7px;
-  background: #fff;
+  background: #fbfdff;
   color: #405f76;
-  font-size: 12px;
-  line-height: 1.7;
+  font-size: 13px;
+  line-height: 1.65;
 }
 
 .confirmation-comment textarea:focus {
@@ -430,40 +428,54 @@ function submitConfirmation() {
   box-shadow: 0 0 0 3px rgb(23 108 192 / 8%);
 }
 
-.confirmation-comment em {
-  display: block;
-  margin-top: 7px;
-  color: #b64b5a;
-  font-size: 10px;
-  font-style: normal;
-}
-
 .confirmation-footer {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  padding-top: 3px;
+  flex: none;
+  align-items: stretch;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid #edf2f5;
 }
 
 .confirmation-footer p {
-  max-width: 620px;
   margin: 0;
-  color: #8a9dab;
-  font-size: 10px;
-  line-height: 1.65;
+  color: #65798b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.confirmation-footer__actions {
+  display: flex;
+  width: 100%;
+  gap: 8px;
 }
 
 .confirmation-footer button {
-  min-width: 120px;
-  height: 38px;
-  flex: none;
+  display: inline-flex;
+  min-width: 0;
+  height: 40px;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
   padding: 0 17px;
   border-radius: 6px;
   background: #176cc0;
   color: #fff;
-  font-size: 12px;
-  font-weight: 500;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.confirmation-footer button.secondary {
+  border: 1px solid #cfdce6;
+  background: #fff;
+  color: #60788b;
+}
+
+.confirmation-footer button.secondary:hover {
+  border-color: #a8bfd0;
+  background: #f8fbfd;
 }
 
 .confirmation-footer button:disabled {
@@ -489,18 +501,5 @@ function submitConfirmation() {
     border-bottom: 0;
   }
 
-  .ai-feedback-summary,
-  .confirmation-footer {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .ai-feedback-summary p {
-    text-align: left;
-  }
-
-  .confirmation-footer button {
-    width: 100%;
-  }
 }
 </style>

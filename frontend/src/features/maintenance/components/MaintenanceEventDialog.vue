@@ -1,15 +1,14 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useMaintenanceStore } from '../stores/maintenance'
 import {
   equipmentTypeLabels,
   eventSourceLabels,
   riskLevelLabels,
-  type AnalysisRecommendation,
   type MaintenanceEvent,
 } from '../types'
-import { formatDateTime, formatPercent } from '../utils'
-import AiFeedbackForm from './AiFeedbackForm.vue'
+import { formatDateTime } from '../utils'
+import AiAnalysisPanel from './AiAnalysisPanel.vue'
 import BackupDataPanel from './BackupDataPanel.vue'
 import DetectorDataPanel from './DetectorDataPanel.vue'
 import EventConfirmation from './EventConfirmation.vue'
@@ -21,16 +20,6 @@ const props = defineProps<{
 const maintenance = useMaintenanceStore()
 const closeButton = ref<HTMLButtonElement | null>(null)
 let previousBodyOverflow = ''
-
-const confidenceLabel = computed(() =>
-  formatPercent(props.event.aiAnalysis.confidence),
-)
-
-const priorityLabels: Record<AnalysisRecommendation['priority'], string> = {
-  high: '高优先级',
-  medium: '中优先级',
-  low: '低优先级',
-}
 
 function handleWindowKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') {
@@ -70,8 +59,22 @@ onBeforeUnmount(() => {
             <span>{{ equipmentTypeLabels[event.equipmentType] }}</span>
           </div>
           <div class="event-dialog__title-row">
-            <div>
-              <h2 id="event-dialog-title">{{ event.eventTitle }}</h2>
+            <div class="event-dialog__heading-main">
+              <div class="event-dialog__title-line">
+                <h2 id="event-dialog-title">{{ event.eventTitle }}</h2>
+                <div class="event-dialog__badges">
+                  <span class="risk-tag" :data-risk="event.riskLevel">
+                    {{ riskLevelLabels[event.riskLevel] }}
+                  </span>
+                  <span class="status-tag" :data-status="event.status">
+                    {{
+                      event.status === 'pending'
+                        ? '待人工审核'
+                        : '已审核归档'
+                    }}
+                  </span>
+                </div>
+              </div>
               <div class="event-dialog__meta">
                 <span>
                   <small>触发时间</small>
@@ -93,7 +96,7 @@ onBeforeUnmount(() => {
               ref="closeButton"
               type="button"
               class="event-dialog__close"
-              aria-label="关闭工单详情"
+              aria-label="关闭事件详情"
               @click="maintenance.closeEvent"
             >
               <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -106,170 +109,53 @@ onBeforeUnmount(() => {
               </svg>
             </button>
           </div>
-
-          <div class="event-dialog__badges">
-            <span class="risk-tag" :data-risk="event.riskLevel">
-              {{ riskLevelLabels[event.riskLevel] }}
-            </span>
-            <span
-              class="status-tag"
-              :data-status="event.status"
-            >
-              {{ event.status === 'pending' ? '待人工确认' : '已确认归档' }}
-            </span>
-            <span class="confidence-tag">
-              AI 置信度 {{ confidenceLabel }}
-            </span>
-          </div>
         </header>
 
-        <div class="event-dialog__tabs" role="tablist" aria-label="工单详情">
-          <button
-            type="button"
-            role="tab"
-            :aria-selected="maintenance.dialogTab === 'analysis'"
-            :class="{ active: maintenance.dialogTab === 'analysis' }"
-            @click="maintenance.dialogTab = 'analysis'"
-          >
-            分析详情
-          </button>
-          <button
-            type="button"
-            role="tab"
-            :aria-selected="maintenance.dialogTab === 'confirmation'"
-            :class="{ active: maintenance.dialogTab === 'confirmation' }"
-            @click="maintenance.dialogTab = 'confirmation'"
-          >
-            人工确认
-          </button>
-        </div>
-
         <div class="event-dialog__body">
-          <div
-            v-if="maintenance.dialogTab === 'analysis'"
-            class="analysis-view"
-            role="tabpanel"
-          >
+          <div class="analysis-view">
             <section class="analysis-section">
-              <header class="section-heading">
-                <div>
-                  <span>DATABASE EVIDENCE</span>
-                  <h3>设备运行数据</h3>
-                  <p>
-                    以下趋势数据由演示数据提供，接入后读取 MES 数据库真实记录。
-                  </p>
-                </div>
-              </header>
-
-              <div
-                class="data-panels"
-                :data-primary="event.equipmentType"
-              >
-                <DetectorDataPanel
-                  class="data-panels__detector"
-                  :event="event"
-                />
+              <div class="data-panels">
                 <BackupDataPanel
                   class="data-panels__backup"
                   :event="event"
                 />
+                <DetectorDataPanel
+                  class="data-panels__detector"
+                  :event="event"
+                />
               </div>
             </section>
 
-            <section class="analysis-section">
-              <header class="section-heading">
-                <div>
-                  <span>AI ASSESSMENT</span>
-                  <h3>AI 综合分析</h3>
-                  <p>结论基于设备数据和维护记录生成，仅供人工核查参考。</p>
-                </div>
-                <span class="ai-model-tag">
-                  {{ event.aiAnalysis.modelName }} ·
-                  {{ event.aiAnalysis.modelPrecision }}
-                </span>
-              </header>
-
-              <div class="ai-summary">
-                <span aria-hidden="true">AI</span>
-                <div>
-                  <h4>综合结论</h4>
-                  <p>{{ event.aiAnalysis.summary }}</p>
-                </div>
-              </div>
-
-              <div class="ai-detail-grid">
-                <section class="ai-detail-card">
-                  <h4>支持证据</h4>
-                  <ul class="evidence-list">
-                    <li
-                      v-for="evidence in event.aiAnalysis.evidence"
-                      :key="`${evidence.source}-${evidence.metric}`"
-                    >
-                      <span>{{ evidence.source }} · {{ evidence.timeRange }}</span>
-                      <b>{{ evidence.metric }}</b>
-                      <p>{{ evidence.observation }}</p>
-                    </li>
-                  </ul>
-                </section>
-
-                <section class="ai-detail-card ai-detail-card--gap">
-                  <h4>数据缺口</h4>
-                  <ul class="gap-list">
-                    <li
-                      v-for="gap in event.aiAnalysis.dataGaps"
-                      :key="gap"
-                    >
-                      {{ gap }}
-                    </li>
-                  </ul>
-                </section>
-              </div>
-
-              <section class="recommendations">
-                <h4>维护建议</h4>
-                <ol>
-                  <li
-                    v-for="recommendation in event.aiAnalysis.recommendations"
-                    :key="recommendation.action"
-                  >
-                    <span
-                      class="priority-tag"
-                      :data-priority="recommendation.priority"
-                    >
-                      {{ priorityLabels[recommendation.priority] }}
+            <div class="analysis-workspace" :data-status="event.status">
+              <section class="analysis-section analysis-section--ai">
+                <header class="section-heading section-heading--ai">
+                  <div>
+                    <p class="section-kicker">分析结论</p>
+                    <h3 id="ai-analysis-title">AI 综合分析</h3>
+                  </div>
+                  <div class="ai-inline-meta" aria-label="分析信息">
+                    <span>{{ event.aiAnalysis.versions.model.name }}</span>
+                    <span>
+                      {{ formatDateTime(event.aiAnalysis.generatedAt) }}
                     </span>
-                    <div>
-                      <b>{{ recommendation.action }}</b>
-                      <p>{{ recommendation.rationale }}</p>
-                    </div>
-                  </li>
-                </ol>
+                  </div>
+                </header>
+
+                <AiAnalysisPanel
+                  class="ai-analysis-body"
+                  :analysis="event.aiAnalysis"
+                />
               </section>
 
-              <section class="follow-up">
-                <h4>后续复核</h4>
-                <p>{{ event.aiAnalysis.followUp }}</p>
-              </section>
-
-              <footer class="ai-meta">
-                <span>
-                  分析生成时间
-                  {{ formatDateTime(event.aiAnalysis.generatedAt) }}
-                </span>
-                <span>模型 {{ event.aiAnalysis.modelName }}</span>
-                <span>置信度 {{ confidenceLabel }}</span>
-              </footer>
-            </section>
-
-            <AiFeedbackForm :event="event" />
-          </div>
-
-          <div
-            v-else
-            class="confirmation-view"
-            role="tabpanel"
-          >
-            <EventConfirmation :event="event" />
+              <div
+                class="confirmation-column"
+                :class="{
+                  'confirmation-column--sticky': event.status === 'pending',
+                }"
+              >
+                <EventConfirmation :event="event" />
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -284,43 +170,47 @@ onBeforeUnmount(() => {
   inset: 0;
   display: grid;
   place-items: center;
-  padding: 24px;
-  background: rgb(4 25 43 / 54%);
-  backdrop-filter: blur(2px);
+  padding: 20px;
+  background: rgb(4 25 43 / 56%);
+  backdrop-filter: blur(3px);
 }
 
 .event-dialog {
   display: flex;
-  width: min(1120px, 100%);
-  max-height: min(900px, calc(100vh - 48px));
+  width: 1080px;
+  max-width: 100%;
+  max-height: min(920px, calc(100vh - 40px));
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid rgb(255 255 255 / 42%);
-  border-radius: 10px;
+  border: 1px solid rgb(255 255 255 / 48%);
+  border-radius: 14px;
   background: #fff;
-  box-shadow: 0 30px 90px rgb(0 16 31 / 35%);
+  box-shadow: 0 30px 90px rgb(0 16 31 / 36%);
 }
 
 .event-dialog__header {
+  position: relative;
   flex: none;
-  padding: 20px 25px 14px;
-  border-bottom: 1px solid #e5ecf2;
+  padding: 13px 68px 11px 22px;
+  border-bottom: 1px solid #e2eaf0;
   background: #fff;
 }
 
 .event-dialog__eyebrow {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 9px;
-  color: #8b9dab;
-  font-size: 10px;
+  color: #60788b;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .event-dialog__eyebrow i {
   width: 3px;
   height: 3px;
   border-radius: 50%;
-  background: #a8b5bf;
+  background: #9cabb7;
 }
 
 .event-dialog__title-row {
@@ -328,24 +218,37 @@ onBeforeUnmount(() => {
   align-items: flex-start;
   justify-content: space-between;
   gap: 24px;
-  margin-top: 7px;
+  margin-top: 5px;
+  padding-right: 0;
 }
 
 .event-dialog__title-row h2 {
   margin: 0;
-  color: #203f58;
-  font-size: 21px;
-  font-weight: 600;
-  letter-spacing: 0.15px;
+  color: #173e5c;
+  font-size: 22px;
+  font-weight: 680;
+  letter-spacing: 0.1px;
+  line-height: 1.4;
+}
+
+.event-dialog__heading-main {
+  min-width: 0;
+}
+
+.event-dialog__title-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
 }
 
 .event-dialog__meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px 22px;
-  margin-top: 12px;
-  color: #506c82;
-  font-size: 11px;
+  gap: 8px 20px;
+  margin-top: 7px;
+  color: #405f76;
+  font-size: 12px;
 }
 
 .event-dialog__meta span {
@@ -355,29 +258,36 @@ onBeforeUnmount(() => {
 }
 
 .event-dialog__meta small {
-  color: #93a2af;
-  font-size: 10px;
+  color: #65798b;
+  font-size: 12px;
 }
 
 .event-dialog__close {
+  position: absolute;
+  top: 12px;
+  right: 16px;
   display: grid;
-  width: 34px;
-  height: 34px;
+  width: 40px;
+  height: 40px;
   flex: none;
   place-items: center;
-  border-radius: 7px;
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
   background: transparent;
-  color: #8295a5;
+  color: #65798b;
+  line-height: 0;
 }
 
 .event-dialog__close:hover {
-  background: #f0f4f7;
-  color: #46667f;
+  background: #eef3f7;
+  color: #355a74;
 }
 
 .event-dialog__close svg {
-  width: 22px;
-  height: 22px;
+  display: block;
+  width: 21px;
+  height: 21px;
 }
 
 .event-dialog__badges {
@@ -385,322 +295,185 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  margin-top: 13px;
+  margin-top: 0;
 }
 
 .risk-tag,
-.status-tag,
-.confidence-tag,
-.ai-model-tag {
+.status-tag {
   display: inline-flex;
-  padding: 4px 8px;
-  border-radius: 4px;
-  background: #fff6e6;
-  color: #9a6918;
-  font-size: 10px;
+  padding: 5px 9px;
+  border-radius: 6px;
+  background: #fff4dd;
+  color: #94600b;
+  font-size: 12px;
   line-height: 1.4;
 }
 
 .risk-tag[data-risk="inspect"] {
-  background: #fff1e9;
-  color: #ad592d;
+  background: #fff0e9;
+  color: #ad5628;
 }
 
 .risk-tag[data-risk="insufficient_data"] {
-  background: #f0f3f6;
-  color: #6f8191;
+  background: #eef2f5;
+  color: #5f7283;
 }
 
 .status-tag {
-  background: #edf6f2;
-  color: #3c816a;
+  background: #eaf6f1;
+  color: #2f765d;
 }
 
 .status-tag[data-status="pending"] {
   background: #fff5e8;
-  color: #9f6b16;
-}
-
-.confidence-tag,
-.ai-model-tag {
-  background: #edf4fb;
-  color: #4f7493;
-}
-
-.event-dialog__tabs {
-  display: flex;
-  flex: none;
-  gap: 27px;
-  padding: 0 25px;
-  border-bottom: 1px solid #e4ebf1;
-  background: #fff;
-}
-
-.event-dialog__tabs button {
-  position: relative;
-  padding: 13px 1px 12px;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  background: transparent;
-  color: #70879a;
-  font-size: 12px;
-}
-
-.event-dialog__tabs button:hover {
-  color: #176cc0;
-}
-
-.event-dialog__tabs button.active {
-  border-bottom-color: #176cc0;
-  color: #176cc0;
-  font-weight: 600;
+  color: #94600b;
 }
 
 .event-dialog__body {
   overflow-y: auto;
-  padding: 20px 25px 28px;
-  background: #f6f9fc;
-  scrollbar-color: #c5d3df transparent;
+  padding: 16px 20px 18px;
+  background: #f4f8fb;
+  scrollbar-color: #b9cbd8 transparent;
   scrollbar-width: thin;
 }
 
 .analysis-view {
   display: grid;
-  gap: 18px;
+  gap: 12px;
 }
 
 .analysis-section {
   display: grid;
-  gap: 14px;
+  gap: 8px;
 }
 
 .section-heading {
   display: flex;
-  align-items: flex-start;
+  align-items: flex-end;
   justify-content: space-between;
-  gap: 20px;
-  padding: 1px 1px 0;
+  gap: 16px;
+  padding: 0 2px;
 }
 
-.section-heading > div > span {
-  color: #8ba0b0;
-  font-size: 9px;
-  letter-spacing: 1.45px;
+.section-heading > div {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+
+.section-kicker {
+  margin: 0;
+  color: #60788b;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
 }
 
 .section-heading h3 {
-  margin: 5px 0 5px;
-  color: #294e6a;
+  margin: 0;
+  color: #244b69;
   font-size: 17px;
-  font-weight: 600;
+  font-weight: 650;
+  line-height: 1.4;
 }
 
-.section-heading p {
-  margin: 0;
-  color: #8296a6;
-  font-size: 11px;
+.section-heading--ai {
+  align-items: center;
+}
+
+.ai-inline-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.ai-inline-meta span {
+  padding: 5px 8px;
+  border: 1px solid #dce8f1;
+  border-radius: 6px;
+  background: #f4f8fb;
+  color: #536b80;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
 }
 
 .data-panels {
   display: grid;
+  grid-template-columns: minmax(300px, 0.62fr) minmax(0, 1.38fr);
   gap: 14px;
+  align-items: stretch;
 }
 
-.data-panels[data-primary="backup_power"] .data-panels__backup {
-  order: -1;
-}
-
-.ai-summary {
-  display: flex;
-  align-items: flex-start;
-  gap: 14px;
-  padding: 17px 18px;
-  border: 1px solid #cfe0ec;
-  border-left: 3px solid #2c7cc3;
-  border-radius: 7px;
-  background: #f4f9fd;
-}
-
-.ai-summary > span {
+.analysis-workspace {
   display: grid;
-  width: 34px;
-  height: 34px;
-  flex: none;
-  place-items: center;
-  border-radius: 9px;
-  background: #dbeaf7;
-  color: #1763a4;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.6px;
+  grid-template-columns: minmax(0, 1.55fr) minmax(360px, 0.85fr);
+  gap: 16px;
+  align-items: stretch;
 }
 
-.ai-summary h4,
-.ai-detail-card h4,
-.recommendations h4,
-.follow-up h4 {
-  margin: 0;
-  color: #345a76;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.ai-summary p {
-  margin: 8px 0 0;
-  color: #526f83;
-  font-size: 12px;
-  line-height: 1.85;
-}
-
-.ai-detail-grid {
-  display: grid;
-  grid-template-columns: 1.5fr 1fr;
-  gap: 14px;
-}
-
-.ai-detail-card {
-  padding: 17px 18px;
+.analysis-section--ai,
+.confirmation-column {
+  min-width: 0;
+  padding: 16px;
   border: 1px solid #dce7ef;
-  border-radius: 7px;
+  border-radius: 12px;
   background: #fff;
 }
 
-.ai-detail-card--gap {
-  background: #fffaf1;
-  border-color: #eee1c8;
-}
-
-.evidence-list,
-.gap-list {
-  display: grid;
-  gap: 12px;
-  margin: 13px 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.evidence-list li {
-  padding-left: 12px;
-  border-left: 2px solid #d9e8f3;
-}
-
-.evidence-list span {
-  display: block;
-  color: #91a2b0;
-  font-size: 9px;
-}
-
-.evidence-list b {
-  display: block;
-  margin-top: 4px;
-  color: #41627b;
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.evidence-list p,
-.gap-list li {
-  margin: 5px 0 0;
-  color: #60798c;
-  font-size: 11px;
-  line-height: 1.7;
-}
-
-.gap-list li {
-  position: relative;
-  margin: 0;
-  padding-left: 14px;
-}
-
-.gap-list li::before {
-  position: absolute;
-  top: 0.72em;
-  left: 0;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #c38c31;
-  content: "";
-}
-
-.recommendations {
-  padding: 17px 18px;
-  border: 1px solid #dce7ef;
-  border-radius: 7px;
-  background: #fff;
-}
-
-.recommendations ol {
-  display: grid;
-  gap: 12px;
-  margin: 13px 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.recommendations li {
+.analysis-section--ai {
   display: flex;
-  align-items: flex-start;
-  gap: 11px;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  gap: 10px;
 }
 
-.priority-tag {
-  flex: none;
-  padding: 3px 7px;
-  border-radius: 4px;
-  background: #edf3f7;
-  color: #667e90;
-  font-size: 9px;
-}
-
-.priority-tag[data-priority="high"] {
-  background: #fff0f2;
-  color: #b04b59;
-}
-
-.priority-tag[data-priority="medium"] {
-  background: #fff6e6;
-  color: #9d6915;
-}
-
-.recommendations b {
-  color: #405f76;
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.recommendations p {
-  margin: 5px 0 0;
-  color: #73899a;
-  font-size: 11px;
-  line-height: 1.65;
-}
-
-.follow-up {
-  padding: 15px 18px;
-  border: 1px solid #dce7ef;
-  border-radius: 7px;
-  background: #fff;
-}
-
-.follow-up p {
-  margin: 8px 0 0;
-  color: #627b8e;
-  font-size: 11px;
-  line-height: 1.8;
-}
-
-.ai-meta {
+.confirmation-column {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px 22px;
-  padding: 0 2px;
-  color: #91a1ae;
-  font-size: 9px;
+  height: 100%;
+  min-height: 0;
 }
 
-.confirmation-view {
-  padding: 5px 0;
+.confirmation-column--sticky {
+  position: sticky;
+  top: 0;
+  max-height: calc(100vh - 180px);
+}
+
+.confirmation-column > * {
+  width: 100%;
+}
+
+.ai-analysis-body {
+  min-height: 0;
+  flex: 1;
+}
+
+@media (max-width: 1080px) {
+  .analysis-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .analysis-section--ai,
+  .confirmation-column {
+    height: auto;
+    position: static;
+    max-height: none;
+  }
+
+  .ai-analysis-body {
+    flex: none;
+  }
+}
+
+@media (max-width: 1023px) {
+  .data-panels {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 800px) {
@@ -713,18 +486,17 @@ onBeforeUnmount(() => {
   }
 
   .event-dialog__header,
-  .event-dialog__tabs,
   .event-dialog__body {
     padding-right: 17px;
     padding-left: 17px;
   }
 
-  .event-dialog__title-row h2 {
-    font-size: 18px;
+  .event-dialog__header {
+    padding-right: 58px;
   }
 
-  .ai-detail-grid {
-    grid-template-columns: 1fr;
+  .event-dialog__title-row h2 {
+    font-size: 20px;
   }
 }
 
@@ -743,16 +515,19 @@ onBeforeUnmount(() => {
   .event-dialog__meta {
     align-items: flex-start;
     flex-direction: column;
-    gap: 5px;
+    gap: 6px;
   }
 
   .section-heading {
+    align-items: flex-start;
     flex-direction: column;
     gap: 9px;
   }
 
-  .ai-summary {
+  .analysis-section--ai,
+  .confirmation-column {
     padding: 15px;
   }
+
 }
 </style>
