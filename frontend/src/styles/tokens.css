@@ -12,10 +12,11 @@
   --color-navy-deep: #06294d;
   --color-blue: #126ed0;
   --color-blue-soft: #eaf3fb;
+  --color-blue-line: #cfe0ef;
   --color-ink: #18344f;
-  --color-text: #536b82;
-  --color-muted: #7d8da0;
-  --color-line: #dfe8f0;
+  --color-text: #4e6579;
+  --color-muted: #65798b;
+  --color-line: #dce6ef;
   --color-surface: #ffffff;
   --color-page: #eef3f8;
   --color-green: #218564;
@@ -28,6 +29,18 @@
 
   --shadow-panel: 0 12px 32px rgb(26 66 99 / 8%);
   --shadow-floating: 0 20px 60px rgb(5 37 67 / 24%);
-  --radius-panel: 10px;
-  --radius-control: 7px;
+  --radius-panel: 12px;
+  --radius-control: 8px;
+
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-body: 14px;
+  --text-section: 17px;
+  --text-dialog: 22px;
+  --text-page: 28px;
+
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
 }

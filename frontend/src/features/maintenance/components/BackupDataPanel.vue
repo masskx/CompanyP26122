@@ -1,243 +1,229 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import type { EChartsCoreOption } from 'echarts/core'
 import type { MaintenanceEvent } from '../types'
 import { formatPercent } from '../utils'
-import EChart from './EChart.vue'
 
 const props = defineProps<{
   event: MaintenanceEvent
 }>()
-
-const chartOption = computed<EChartsCoreOption>(() => ({
-  animationDuration: 420,
-  color: ['#1976c9'],
-  tooltip: {
-    trigger: 'axis',
-    backgroundColor: 'rgba(255, 255, 255, 0.98)',
-    borderColor: '#d8e4ee',
-    textStyle: {
-      color: '#36536b',
-      fontSize: 12,
-    },
-  },
-  legend: {
-    top: 0,
-    right: 2,
-    icon: 'roundRect',
-    itemWidth: 10,
-    itemHeight: 7,
-    textStyle: {
-      color: '#667f93',
-      fontSize: 11,
-    },
-  },
-  grid: {
-    top: 48,
-    right: 26,
-    bottom: 30,
-    left: 50,
-  },
-  xAxis: {
-    type: 'category',
-    boundaryGap: false,
-    data: props.event.backupTrend.battery.map((point) => point.time),
-    axisLine: {
-      lineStyle: {
-        color: '#dce6ee',
-      },
-    },
-    axisTick: {
-      show: false,
-    },
-    axisLabel: {
-      color: '#8499aa',
-      fontSize: 11,
-    },
-  },
-  yAxis: {
-    type: 'value',
-    name: '%',
-    min: 50,
-    max: 100,
-    interval: 10,
-    nameTextStyle: {
-      color: '#8a9dab',
-      fontSize: 11,
-    },
-    axisLabel: {
-      color: '#8499aa',
-      fontSize: 11,
-    },
-    splitLine: {
-      lineStyle: {
-        color: '#edf2f6',
-      },
-    },
-  },
-  series: [
-    {
-      name: '电池电量',
-      type: 'line',
-      data: props.event.backupTrend.battery.map((point) => point.value),
-      symbol: 'circle',
-      symbolSize: 5,
-      smooth: true,
-      lineStyle: {
-        width: 2,
-      },
-      areaStyle: {
-        color: 'rgba(25, 118, 201, 0.08)',
-      },
-    },
-  ],
-}))
 </script>
 
 <template>
-  <section class="data-panel" aria-labelledby="backup-data-title">
+  <section
+    class="data-panel data-panel--backup"
+    aria-labelledby="backup-data-title"
+  >
     <header class="data-panel__heading">
       <div>
-        <span class="data-panel__eyebrow">POWER REFERENCE</span>
-        <h3 id="backup-data-title">备电 · 近 24 小时电量与续航参考</h3>
-        <p>电量来自设备记录，续航参考用于辅助判断容量趋势</p>
+        <p>备电状态</p>
+        <h3 id="backup-data-title">近 24 小时电量与续航参考</h3>
       </div>
       <span class="data-panel__source">演示数据 · 待接入数据库</span>
     </header>
 
-    <div class="backup-stats">
-      <div>
-        <span>当前电量</span>
-        <strong>{{ formatPercent(event.backupTrend.currentBattery / 100) }}</strong>
-        <small>电量不等同于剩余容量</small>
-      </div>
-      <div>
-        <span>参考续航</span>
-        <strong>{{ event.backupTrend.estimatedRuntimeHours }} h</strong>
-        <small>相近负载条件</small>
-      </div>
-      <div>
-        <span>历史参考</span>
-        <strong>{{ event.backupTrend.historicalRuntimeHours }} h</strong>
-        <small>需核对完整充放电过程</small>
-      </div>
-    </div>
+    <div class="backup-summary">
+      <section class="charge-summary" aria-labelledby="charge-title">
+        <div class="charge-summary__label">
+          <h4 id="charge-title">当前电量</h4>
+          <p>电量不等同于剩余容量</p>
+        </div>
+        <strong>
+          {{ formatPercent(props.event.backupTrend.currentBattery / 100) }}
+        </strong>
+      </section>
 
-    <EChart :option="chartOption" label="近 24 小时备电电量折线图" />
+      <section class="runtime-summary" aria-labelledby="runtime-title">
+        <header>
+          <h4 id="runtime-title">续航参考</h4>
+          <span>相近负载条件</span>
+        </header>
+
+        <div class="runtime-values">
+          <div>
+            <span>当前估算</span>
+            <strong>{{ props.event.backupTrend.estimatedRuntimeHours }} h</strong>
+          </div>
+          <i aria-hidden="true"></i>
+          <div>
+            <span>历史参考</span>
+            <strong>
+              {{ props.event.backupTrend.historicalRuntimeHours }} h
+            </strong>
+          </div>
+        </div>
+
+        <p>需核对完整充放电过程</p>
+      </section>
+    </div>
   </section>
 </template>
 
 <style scoped>
 .data-panel {
+  display: flex;
+  height: 100%;
   min-width: 0;
-  padding: 20px 20px 12px;
-  border: 1px solid #dce7f0;
-  border-radius: 9px;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
   background: #fff;
 }
 
 .data-panel__heading {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 20px;
-  margin-bottom: 17px;
+  gap: 10px 16px;
 }
 
-.data-panel__eyebrow {
-  color: #8aa0b1;
-  font-size: 9px;
-  letter-spacing: 1.45px;
-}
-
-.data-panel__heading h3 {
-  margin: 5px 0 5px;
-  color: #294f6d;
-  font-size: 15px;
-  font-weight: 600;
+.data-panel__heading > div {
+  min-width: 0;
+  flex: 1 1 210px;
 }
 
 .data-panel__heading p {
+  margin: 0 0 5px;
+  color: #5f7487;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.data-panel__heading h3 {
   margin: 0;
-  color: #8498a8;
-  font-size: 11px;
+  color: #244b69;
+  font-size: 17px;
+  font-weight: 650;
+  line-height: 1.45;
 }
 
 .data-panel__source {
   flex: none;
-  padding: 4px 8px;
+  padding: 5px 9px;
   border-radius: 999px;
   background: #f1f5f8;
-  color: #7a8e9f;
-  font-size: 10px;
+  color: #65798b;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
-.backup-stats {
+.backup-summary {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.charge-summary {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  margin-bottom: 8px;
-  border: 1px solid #e2eaf1;
-  border-radius: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  padding: 20px;
+  border: 1px solid #d4e4f0;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #f4f9fd 0%, #f9fcff 100%);
+}
+
+.charge-summary__label h4,
+.runtime-summary header h4 {
+  margin: 0;
+  color: #2f5571;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.charge-summary__label p {
+  margin: 7px 0 0;
+  color: #5f7487;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.charge-summary > strong {
+  color: #174d79;
+  font-size: 36px;
+  font-weight: 680;
+  letter-spacing: -0.6px;
+  line-height: 1;
+}
+
+.runtime-summary {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  padding: 18px;
+  border: 1px solid #e0e9f0;
+  border-radius: 12px;
   background: #fbfdff;
 }
 
-.backup-stats > div {
-  min-width: 0;
-  padding: 14px 16px;
-  border-right: 1px solid #e5ecf2;
+.runtime-summary > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-.backup-stats > div:last-child {
-  border-right: 0;
+.runtime-summary > header span,
+.runtime-summary > p,
+.runtime-values span {
+  color: #65798b;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
-.backup-stats span,
-.backup-stats small {
-  display: block;
-  color: #8397a8;
-  font-size: 11px;
+.runtime-values {
+  display: grid;
+  flex: 1;
+  grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1fr);
+  gap: 16px;
+  align-items: center;
+  margin: 12px 0;
 }
 
-.backup-stats strong {
-  display: block;
-  margin: 6px 0 5px;
-  color: #234d70;
-  font-size: 25px;
-  font-weight: 600;
+.runtime-values > div {
+  display: grid;
+  gap: 8px;
+}
+
+.runtime-values > div:last-child {
+  text-align: right;
+}
+
+.runtime-values strong {
+  color: #345c79;
+  font-size: 28px;
+  font-weight: 680;
   line-height: 1.1;
+  white-space: nowrap;
+}
+
+.runtime-values > div:first-child strong {
+  color: #1767ad;
+}
+
+.runtime-values > i {
+  align-self: stretch;
+  width: 1px;
+  background: #e0e9f0;
+}
+
+.runtime-summary > p {
+  margin: 0;
 }
 
 @media (max-width: 640px) {
   .data-panel {
-    padding: 17px 12px 8px;
+    padding: 16px;
   }
 
   .data-panel__heading {
     flex-direction: column;
-    gap: 9px;
-  }
-
-  .backup-stats {
-    grid-template-columns: 1fr;
-  }
-
-  .backup-stats > div {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    align-items: center;
-    gap: 2px 14px;
-    border-right: 0;
-    border-bottom: 1px solid #e5ecf2;
-  }
-
-  .backup-stats > div:last-child {
-    border-bottom: 0;
-  }
-
-  .backup-stats strong {
-    grid-column: 2;
-    grid-row: 1 / 3;
-    margin: 0;
+    gap: 10px;
   }
 }
 </style>
