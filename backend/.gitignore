@@ -1,0 +1,8 @@
+# The repository root .gitignore ignores every "data/" directory and ".env.*" files.
+# The backend needs its data/ (station configuration seed, sample knowledge corpus, MQTT
+# examples) and .env.example in git, so they are re-included here.
+!data/
+!.env.example
+
+# generated at runtime (assistant reports)
+var/

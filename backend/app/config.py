@@ -20,11 +20,16 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     # Optional shared key for the whole API (X-API-Key). Empty = open (no auth for now).
     api_key: SecretStr | None = None
+    # Service token the main server sends as "Authorization: Bearer <token>" (design doc
+    # COMPUTE_SERVICE_TOKEN). Either this or API_KEY authorises a call; both empty = open.
+    compute_service_token: SecretStr | None = None
     cors_origins: list[str] = Field(default_factory=list)
 
     # ---- stations ----------------------------------------------------------------------
-    # Seed file for the station configuration table (and simulation profiles).
+    # Station directory snapshot (thresholds, equipment; simulation profiles for the simulator).
     stations_file: Path = BASE_DIR / "data" / "stations.json"
+    # Local time zone used for "today / last month / last year" in reports and assessments.
+    analysis_timezone: str = "Asia/Shanghai"
 
     # ---- Apache IoTDB ------------------------------------------------------------------
     timeseries_backend: Literal["iotdb", "memory"] = "iotdb"  # memory: demos/tests only
@@ -42,8 +47,10 @@ class Settings(BaseSettings):
 
     # ---- LLM (OpenAI-compatible: DeepSeek for development, vLLM in production) ---------
     llm_provider: Literal["none", "deepseek", "vllm"] = "none"
-    llm_base_url: str | None = None
-    llm_model: str | None = None
+    llm_base_url: str | None = Field(
+        default=None, validation_alias=AliasChoices("LLM_BASE_URL", "VLLM_BASE_URL"))
+    llm_model: str | None = Field(
+        default=None, validation_alias=AliasChoices("LLM_MODEL", "VLLM_MODEL_NAME"))
     llm_api_key: SecretStr | None = None
     deepseek_api_key: SecretStr | None = Field(
         default=None, validation_alias=AliasChoices("DEEPSEEK_API_KEY", "DEEPSEEK_API"))
@@ -51,6 +58,9 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 2048
     llm_timeout_seconds: float = 60
     llm_enable_thinking: bool = False  # Qwen3 on vLLM; reasoning is never shown to users
+    # Shown in analysis results (versions.model); the model list is the source of truth.
+    llm_model_precision: str = "以模型清单为准"
+    llm_model_revision: str = "以模型清单为准"
 
     # ---- Agent -------------------------------------------------------------------------
     agent_max_tool_rounds: int = Field(default=4, ge=1, le=10)
@@ -75,21 +85,31 @@ class Settings(BaseSettings):
     kb_chunk_size: int = 800
     kb_chunk_overlap: int = 120
     kb_classifications: list[str] = Field(default_factory=lambda: ["public", "internal"])
-    kb_version: str | None = None  # pin queries to one version instead of the active one
+    kb_version: str | None = Field(  # pin queries to one version instead of the active one
+        default=None, validation_alias=AliasChoices("KB_VERSION", "KNOWLEDGE_INDEX_VERSION"))
+    kb_corpus_path: Path = Field(  # default corpus for scripts/build_knowledge.py
+        default=BASE_DIR / "data" / "knowledge",
+        validation_alias=AliasChoices("KB_CORPUS_PATH", "KNOWLEDGE_CORPUS_PATH"))
+    # Optional local rerank model (vLLM / TEI / Jina-compatible /rerank endpoint).
+    rerank_base_url: str | None = None
+    rerank_model_name: str | None = None
+    rerank_api_key: SecretStr | None = None
+    kb_rerank_candidates: int = Field(default=20, ge=1, le=100)
 
     # ---- Ingestion (simulator / MQTT -> IoTDB) -------------------------------------------
     mqtt_host: str = "127.0.0.1"
     mqtt_port: int = 1883
-    mqtt_topics: list[str] = Field(default_factory=lambda: ["sim/stations/#"])
+    mqtt_topics: list[str] = Field(default_factory=lambda: ["maintenance/v1/#"])
     mqtt_username: str | None = None
     mqtt_password: SecretStr | None = None
     mqtt_tls: bool = False
     mqtt_client_id: str | None = None
     mqtt_qos: int = 1
-    # Message format: "simulator" (built-in), "mapping" (JSON file), or "module:Class".
-    ingest_parser: str = "simulator"
+    # Message format: "telemetry_v1" (main server contract), "mapping" (JSON file) or
+    # "module:Class".
+    ingest_parser: str = "telemetry_v1"
     ingest_mapping_file: Path | None = None
-    ingest_topic_prefix: str = "sim/stations"
+    ingest_topic_prefix: str = "maintenance/v1"
     ingest_batch_size: int = 500
     ingest_flush_seconds: float = 1.0
     ingest_reject_unknown_devices: bool = True
@@ -98,22 +118,42 @@ class Settings(BaseSettings):
     simulator_backfill_hours: float = 48
     simulator_seed: int | None = 42
 
-    # ---- Daily station analysis -----------------------------------------------------------
-    analysis_timezone: str = "Asia/Shanghai"   # defines the calendar day that is analysed
-    analysis_version: str = Field(default="v1", pattern=r"^[A-Za-z0-9_.\-]{1,32}$")
-    analysis_schedule_enabled: bool = True      # in-process daily run (single API instance)
-    analysis_run_at: str = Field(default="00:30", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
-    analysis_catchup_days: int = Field(default=3, ge=0, le=31)  # missed days run on restart
-    analysis_max_attempts: int = Field(default=3, ge=1, le=10)
-    analysis_retry_minutes: float = Field(default=10, gt=0)
+    # ---- Predictive maintenance analysis (called by the main server) --------------------
+    # Main server read-only history API (GET /internal/v1/maintenance/history). Empty = use
+    # the work-order copy the main server pushes to this service (openGauss).
+    mes_api_base_url: str | None = None
+    mes_service_token: SecretStr | None = None
+    analysis_watermark_wait_seconds: float = Field(default=30, ge=0)
+    analysis_watermark_poll_ms: int = Field(default=500, ge=50)
+    analysis_max_window_days: int = Field(default=31, ge=1)
+    analysis_idempotency_ttl_seconds: int = Field(default=3600, ge=0)
+    maintenance_rule_set_version: str = "maintenance-rules-2026.11.1"
+    maintenance_action_catalog_path: Path = BASE_DIR / "data" / "maintenance" / "actions.json"
+    maintenance_narrator_prompt_version: str = "maintenance-narrator-v1"
+    maintenance_narrator_model_name: str | None = None  # default: LLM_MODEL
+    maintenance_narrator_timeout_seconds: float = Field(default=30, gt=0)
+    maintenance_narrator_max_chars: int = Field(default=300, ge=50)
+    maintenance_use_llm: bool = True  # False: always the rule template
+    # rule parameters
     analysis_consecutive_samples: int = Field(default=3, ge=1)  # samples per threshold breach
     analysis_gap_intervals: float = Field(default=3, gt=1)  # gap > N sampling intervals
     analysis_stuck_minutes: int = Field(default=60, ge=5)   # identical values this long
-    analysis_min_completeness: float = Field(default=0.9, ge=0, le=1)
-    analysis_fault_level: Literal["inspect", "watch"] = "inspect"  # to be confirmed
+    analysis_min_completeness: float = Field(default=0.8, ge=0, le=1)  # below = insufficient
+    analysis_fault_level: Literal["inspect", "watch"] = "inspect"
     analysis_charge_factor: float = Field(default=1.5, gt=1)  # slow charge = factor x expected
-    analysis_max_event_values: int = Field(default=3000, ge=10)
-    analysis_use_llm: bool = True  # explanations by the LLM when LLM_PROVIDER is set
+    analysis_baseline_days: int = Field(default=14, ge=1, le=60)  # 前两周 baseline
+    analysis_rise_watch_pct: float = Field(default=30, gt=0)   # dose rise vs baseline
+    analysis_runtime_drop_watch_pct: float = Field(default=15, gt=0)
+    analysis_runtime_drop_inspect_pct: float = Field(default=25, gt=0)
+    analysis_history_lookback_days: int = Field(default=90, ge=0)
+
+    # ---- Assistant workflows and reports -----------------------------------------------
+    # Messages without an explicit workflow or keyword are classified by the model
+    # (one short call); False = such messages go straight to the general agent.
+    assistant_intent_model: bool = True
+    reports_dir: Path = BASE_DIR / "var" / "reports"   # generated Excel files
+    report_max_days: int = Field(default=92, ge=1)
+    sse_heartbeat_seconds: float = Field(default=15, gt=0)
 
     @model_validator(mode="after")
     def _check(self) -> "Settings":
@@ -134,7 +174,9 @@ class Settings(BaseSettings):
         try:
             ZoneInfo(self.analysis_timezone)
         except (ZoneInfoNotFoundError, ValueError) as exc:
-            raise ValueError(f"unknown ANALYSIS_TIMEZONE {self.analysis_timezone!r}") from exc
+            raise ValueError(f"unknown ANALYSIS_TIMEZONE {self.analysis_timezone!r} (on Windows "
+                             "the time-zone database comes from the tzdata package: "
+                             "pip install tzdata)") from exc
         if self.embedding_provider == "local" and not self.embedding_base_url:
             raise ValueError("EMBEDDING_PROVIDER=local needs EMBEDDING_BASE_URL")
         return self

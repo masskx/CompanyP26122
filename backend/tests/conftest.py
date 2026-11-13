@@ -11,16 +11,17 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 
-from app.analysis.store import MemoryAnalysisStore
+from app.agent.reports import MemoryReportStore
 from app.config import BASE_DIR, Settings
 from app.db.chat_store import MemoryChatStore
+from app.db.work_orders import MemoryWorkOrderStore
 from app.deps import build_resources
-from app.ingestion.parsers import SimulatorFormat
+from app.ingestion.parsers import TelemetryV1Format
 from app.ingestion.pipeline import Pipeline
 from app.ingestion.simulator import SimulatedSource
 from app.main import create_app
 from app.stations.model import Station
-from app.stations.store import MemoryStationStore, load_file
+from app.stations.store import StationStore, load_file
 from app.timeseries.iotdb import MemoryTimeSeries
 
 STATIONS = BASE_DIR / "data" / "stations.json"
@@ -46,9 +47,10 @@ def anyio_backend():
 
 
 @pytest.fixture
-def settings() -> Settings:
+def settings(tmp_path) -> Settings:
     return Settings(_env_file=None, timeseries_backend="memory", stations_file=STATIONS,
-                    analysis_schedule_enabled=False)
+                    reports_dir=tmp_path / "reports", analysis_watermark_wait_seconds=0.3,
+                    analysis_watermark_poll_ms=50, assistant_intent_model=False)
 
 
 @pytest.fixture(scope="session")
@@ -62,7 +64,10 @@ async def asimulate(stations: list[Station], hours: float, now: datetime | None 
     now = now or datetime.now(UTC)
     source = SimulatedSource(stations, backfill_hours=hours, realtime=False, seed=42,
                              clock=lambda: now)
-    await Pipeline(source, SimulatorFormat(), ts, batch_size=20_000).run()
+    pipe = Pipeline(source, TelemetryV1Format(), ts, batch_size=20_000)
+    await pipe.run()
+    ts.watermark = pipe.watermark  # type: ignore[attr-defined]
+    ts.now = now  # type: ignore[attr-defined]
     return ts
 
 
@@ -73,9 +78,9 @@ def simulate(stations: list[Station], hours: float, now: datetime | None = None
 
 @pytest.fixture(scope="session")
 def store(stations) -> MemoryTimeSeries:
-    """48 h of simulated data for the sample stations; the scripted scenario is yesterday.
-    Shared by the whole session: tests must not write to it."""
-    return simulate(stations, 48)
+    """26 h of simulated telemetry_v1 data for the 18 stations (the scenario lies in the last
+    24 h). Shared by the whole session: tests must not write to it."""
+    return simulate(stations, 26)
 
 
 class FakeEmbeddings(Embeddings):
@@ -155,13 +160,14 @@ class FakeChatModel(BaseChatModel):
 @pytest.fixture
 def make_resources(settings, stations, store):
     def make(responses: list | None = None, retriever=None, chat_store=None, timeseries=None,
-             analysis_store=None, settings_=None):
+             work_orders=None, settings_=None):
         llm = FakeChatModel(responses=list(responses), calls=[]) if responses is not None \
             else None
         return build_resources(settings_ or settings, timeseries=timeseries or store, llm=llm,
                                retriever=retriever, chat_store=chat_store or MemoryChatStore(),
-                               stations=MemoryStationStore(stations),
-                               analysis_store=analysis_store or MemoryAnalysisStore()), llm
+                               stations=StationStore(stations),
+                               work_orders=work_orders or MemoryWorkOrderStore(),
+                               reports=MemoryReportStore()), llm
 
     return make
 
@@ -183,10 +189,13 @@ def make_client(settings, make_resources):
     yield make
 
 
-def parse_sse(text: str) -> list[tuple[str, dict]]:
+def parse_sse(text: str, keep_seq: bool = False) -> list[tuple[str, dict]]:
     events = []
     for block in text.strip().split("\n\n"):
         lines = dict(line.split(": ", 1) for line in block.splitlines() if ": " in line)
         if "event" in lines:
-            events.append((lines["event"], json.loads(lines["data"])))
+            data = json.loads(lines["data"])
+            if not keep_seq:
+                data.pop("seq", None)
+            events.append((lines["event"], data))
     return events

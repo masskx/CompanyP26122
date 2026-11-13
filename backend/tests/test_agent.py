@@ -1,7 +1,6 @@
 """LangGraph agent through the HTTP API with a scripted model: tool decisions, streaming,
 citations, persistence, history and per-user sessions."""
 
-from datetime import timedelta
 
 import pytest
 from langchain_core.messages import AIMessage
@@ -59,35 +58,31 @@ async def test_knowledge_search_with_citation(make_client, retriever):
 
 async def test_station_tool_reads_iotdb(make_client):
     client, llm = await make_client([
-        tool_call("get_station_status", {"station_id": "ST01"}),
-        AIMessage(content="ST01 最新数据见 [1]。"),
+        tool_call("get_station_status", {"station_id": "AS01"}),
+        AIMessage(content="AS01 最新数据见 [1]。"),
     ])
-    r = await client.post("/chat", json={"message": "ST01 现在怎么样", "stream": False},
+    r = await client.post("/chat", json={"message": "AS01 现在怎么样", "stream": False},
                           headers=ALICE)
     msg = r.json()["message"]
-    assert msg["citations"][0]["kind"] == "data" and msg["citations"][0]["device_id"] == "ST01"
+    assert msg["citations"][0]["kind"] == "data" and msg["citations"][0]["device_id"] == "AS01"
     result = llm.calls[1]["messages"][-1].content
-    assert '"battery_voltage"' in result and '"dose_rate"' in result
+    assert '"battery_voltage"' in result and '"dose_rate_avg"' in result
     # Without a knowledge base the search tool is not offered and the prompt says so.
     assert "知识库当前不可用" in llm.calls[0]["messages"][0].content
 
 
-async def test_analysis_tools_read_stored_results(make_client):
+async def test_maintenance_and_work_order_tools(make_client):
     client, llm = await make_client([
-        tool_call("get_analysis_results", {"station_id": "ST01"}),
-        AIMessage(content="昨天 ST01 有异常记录 [1]。"),
+        tool_call("run_maintenance_check", {"station_id": "AS06"}, "c1"),
+        tool_call("get_work_orders", {"station_id": "AS06"}, "c2"),
+        AIMessage(content="AS06 建议检修 [1]，暂无工单 [2]。"),
     ])
-    r = client.resources
-    # the explanation uses no LLM call here: no LLM_PROVIDER for analysis in this test
-    r.analysis.explainer.llm = None
-    day = r.analysis.today() - timedelta(days=1)
-    await r.analysis.run_now(day)
-    out = await client.post("/chat", json={"message": "昨天哪些设备需要检修", "stream": False},
+    out = await client.post("/chat", json={"message": "AS06 要不要检修", "stream": False},
                             headers=ALICE)
-    assert out.json()["message"]["tools_used"] == ["get_analysis_results"]
-    result = llm.calls[1]["messages"][-1].content
-    assert '"level": "inspect"' in result and '"device": "D03"' in result
-    assert "ST02" not in result.split("records")[1]  # station filter applied
+    assert out.json()["message"]["tools_used"] == ["get_work_orders", "run_maintenance_check"]
+    check = llm.calls[1]["messages"][-1].content
+    assert '"health_level":"inspect"' in check and "BACKUP-RUNTIME-DROP" in check
+    assert "没有工单记录" in llm.calls[2]["messages"][-1].content
 
 
 async def test_tool_rounds_are_capped(make_client, settings):

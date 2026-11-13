@@ -115,3 +115,47 @@ def test_failed_build_leaves_nothing(store):
     with pytest.raises(RuntimeError, match="self-retrieval"):
         build(KNOWLEDGE, store, Broken(), version="v1")
     assert store.versions() == [] and store.active_version() is None
+
+
+def test_word_document_sections(tmp_path):
+    docx = pytest.importorskip("docx")
+    from app.rag.ingest import DocEntry, split
+
+    d = docx.Document()
+    d.add_heading("备电维护规程", level=1)
+    d.add_heading("1 日常检查", level=2)
+    d.add_paragraph("每月检查蓄电池端电压，浮充电压应保持在 13.5 V 左右。")
+    table = d.add_table(rows=2, cols=2)
+    table.cell(0, 0).text, table.cell(0, 1).text = "项目", "周期"
+    table.cell(1, 0).text, table.cell(1, 1).text = "容量测试", "每年一次"
+    d.add_heading("2 故障处理", level=2)
+    d.add_paragraph("市电正常时电压下降，应检查充电模块。")
+    path = tmp_path / "battery.docx"
+    d.save(path)
+    entry = DocEntry(doc_id="battery", path="battery.docx", title="备电维护规程")
+    chunks = split(entry, path, 300, 40)
+    sections = [c.metadata["section"] for c in chunks]
+    assert sections == ["备电维护规程 > 1 日常检查", "备电维护规程 > 2 故障处理"]
+    assert "容量测试 | 每年一次" in chunks[0].page_content
+
+
+@pytest.mark.anyio
+async def test_rerank_orders_hits_and_falls_back(monkeypatch):
+    import httpx
+
+    from app.rag import rerank
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["model"] == "bge-reranker" and body["query"] == "q"
+        return httpx.Response(200, json={"results": [{"index": 2, "relevance_score": 0.9},
+                                                     {"index": 0, "relevance_score": 0.4}]})
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(rerank.httpx, "AsyncClient",
+                        lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    r = rerank.Reranker("http://rerank/v1", "bge-reranker")
+    assert await r.rank("q", ["a", "b", "c"]) == [(2, 0.9), (0, 0.4)]
+    monkeypatch.setattr(rerank.httpx, "AsyncClient", lambda **kw: real(
+        transport=httpx.MockTransport(lambda req: httpx.Response(503)), **kw))
+    assert await r.rank("q", ["a"]) is None  # caller keeps the vector order

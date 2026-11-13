@@ -7,7 +7,7 @@ A corpus directory may contain a manifest.json:
                     "title": "...", "source": "...", "classification": "internal",
                     "access_scope": "all", "sha256": "<hex>"}]}
 Each file is verified against its sha256 so only approved bytes are indexed. Without a
-manifest, every .md/.txt/.pdf file is indexed and the version is a timestamp.
+manifest, every .md/.txt/.pdf/.docx file is indexed and the version is a timestamp.
 """
 
 import hashlib
@@ -27,7 +27,7 @@ from app.rag.store import KnowledgeStore
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED = {".md", ".markdown", ".txt", ".pdf"}
+SUPPORTED = {".md", ".markdown", ".txt", ".pdf", ".docx"}
 _SEPARATORS = ["\n\n", "\n", "。", "！", "？", "；", "!", "?", ";", ". ", " ", ""]
 
 
@@ -81,6 +81,36 @@ def verify(manifest: Manifest, corpus: Path) -> dict[str, Path]:
     return files
 
 
+def docx_to_markdown(path: Path) -> str:
+    """Word document -> Markdown: heading styles ("Heading 1" / "标题 1") become #, ##, ###;
+    table rows become "cell | cell" lines, in document order."""
+    try:
+        import docx
+    except ImportError as exc:
+        raise RuntimeError('Word support needs: pip install -e ".[docs]"') from exc
+    document = docx.Document(str(path))
+    lines: list[str] = []
+    for block in document.element.body.iterchildren():
+        tag = block.tag.rsplit("}", 1)[-1]
+        if tag == "p":
+            para = docx.text.paragraph.Paragraph(block, document)
+            text = para.text.strip()
+            if not text:
+                continue
+            style = (para.style.name if para.style is not None else "") or ""
+            level = next((int(ch) for ch in style if ch.isdigit()), None) \
+                if style.lower().startswith(("heading", "标题")) else None
+            lines.append(f"{'#' * min(level, 3)} {text}" if level else text)
+        elif tag == "tbl":
+            table = docx.table.Table(block, document)
+            for row in table.rows:
+                cells = [c.text.strip().replace("\n", " ") for c in row.cells]
+                if any(cells):
+                    lines.append(" | ".join(dict.fromkeys(cells)))
+        lines.append("")
+    return "\n".join(lines)
+
+
 def split(entry: DocEntry, path: Path, chunk_size: int, overlap: int) -> list[Document]:
     splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=overlap,
                                               separators=_SEPARATORS, keep_separator="end")
@@ -92,10 +122,11 @@ def split(entry: DocEntry, path: Path, chunk_size: int, overlap: int) -> list[Do
             raise RuntimeError('PDF support needs: pip install -e ".[pdf]"') from exc
         pages = [Document(page_content=p.extract_text() or "", metadata={"page": i})
                  for i, p in enumerate(PdfReader(str(path)).pages, start=1)]
-    elif suffix in (".md", ".markdown"):
+    elif suffix in (".md", ".markdown", ".docx"):
         md = MarkdownHeaderTextSplitter([("#", "h1"), ("##", "h2"), ("###", "h3")],
                                         strip_headers=True)
-        pages = md.split_text(path.read_text(encoding="utf-8"))
+        text = docx_to_markdown(path) if suffix == ".docx" else path.read_text(encoding="utf-8")
+        pages = md.split_text(text)
     else:
         pages = [Document(page_content=path.read_text(encoding="utf-8"))]
     chunks = []

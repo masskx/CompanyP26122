@@ -4,7 +4,9 @@ Sources (all deliver RawMessage(topic, payload)):
   SimulatedSource   app/ingestion/simulator.py
   MqttSource        subscribes to the broker (reconnects with backoff)
   FileSource        replays captured messages from a JSON Lines file
-Swapping the simulator for the real MQTT feed changes only the source and the parser.
+Swapping the simulator for the real MQTT feed changes only the source (and the parser, if
+the real format differs from telemetry_v1). After each successful write the pipeline stores
+the highest `source_sequence` received as the consumption watermark (WATERMARK_SERIES).
 """
 
 import asyncio
@@ -23,7 +25,7 @@ from typing import Any, Protocol
 
 from app.config import Settings
 from app.ingestion.parsers import Parser, RawMessage, Rejected
-from app.timeseries.iotdb import Measurement, TimeSeriesError
+from app.timeseries.iotdb import WATERMARK_SERIES, Measurement, TimeSeriesError
 
 logger = logging.getLogger(__name__)
 Emit = Callable[[RawMessage], Awaitable[None]]
@@ -155,6 +157,9 @@ class Pipeline:
         self.stats = Stats()
         self._queue: asyncio.Queue[RawMessage | None] = asyncio.Queue(maxsize=10_000)
         self._buffer: list[Measurement] = []
+        # highest source_sequence received / durably written (the consumption watermark)
+        self._pending_seq: int | None = None
+        self.watermark: int | None = None
 
     def _check(self, m: Measurement) -> None:
         if self.known is not None and (m.site, m.device_id) not in self.known:
@@ -176,6 +181,9 @@ class Pipeline:
             if partial:
                 self.stats.rejected.update(partial)
                 partial.clear()
+            seq = getattr(self.parser, "last_sequence", None)
+            if seq is not None and (self._pending_seq is None or seq > self._pending_seq):
+                self._pending_seq = seq
         for m in measurements:
             try:
                 self._check(m)
@@ -189,6 +197,11 @@ class Pipeline:
 
     async def _flush(self) -> None:
         backoff = 1.0
+        if not self._buffer and self._pending_seq is not None and \
+                self._pending_seq != self.watermark:
+            # everything received so far is written: advance the watermark
+            self._buffer.append(Measurement(*WATERMARK_SERIES[:2], WATERMARK_SERIES[2],
+                                            datetime.now(UTC), float(self._pending_seq)))
         while self._buffer:
             batch = self._buffer[: self.batch_size]
             try:
@@ -200,7 +213,14 @@ class Pipeline:
                 backoff = min(backoff * 2, 30)
                 continue
             del self._buffer[: len(batch)]
-            self.stats.written += len(batch)
+            data = [m for m in batch if m.site != WATERMARK_SERIES[0]]
+            self.stats.written += len(data)
+            if len(data) != len(batch):
+                self.watermark = int(batch[-1].value)
+            if not self._buffer and self._pending_seq is not None and \
+                    self._pending_seq != self.watermark:
+                self._buffer.append(Measurement(*WATERMARK_SERIES[:2], WATERMARK_SERIES[2],
+                                                datetime.now(UTC), float(self._pending_seq)))
 
     async def run(self) -> None:
         async def produce() -> None:
@@ -234,7 +254,7 @@ class Pipeline:
             producer.cancel()
             with contextlib.suppress(BaseException):
                 await producer
-            if self._buffer:  # best effort on shutdown
+            if self._buffer or self._pending_seq != self.watermark:  # best effort on shutdown
                 with contextlib.suppress(BaseException):
                     await asyncio.wait_for(self._flush(), 5)
 

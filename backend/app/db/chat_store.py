@@ -37,6 +37,7 @@ class Session(BaseModel):
     user_id: str
     title: str | None
     message_count: int
+    workflow: str | None = None  # preset assistant workflow (None = free conversation)
     created_at: datetime
     updated_at: datetime
 
@@ -75,6 +76,8 @@ class ChatStore(Protocol):
     async def ping(self) -> None: ...
     async def close(self) -> None: ...
     async def create_session(self, user_id: str, title: str | None) -> Session: ...
+    async def set_workflow(self, user_id: str, session_id: str, workflow: str) -> None: ...
+    async def reassign(self, from_user: str, to_user: str) -> int: ...
     async def get_session(self, user_id: str, session_id: str) -> Session | None: ...
     async def list_sessions(self, user_id: str, limit: int, offset: int) -> list[Session]: ...
     async def rename_session(self, user_id: str, session_id: str, title: str) -> Session | None:
@@ -114,6 +117,19 @@ class MemoryChatStore:
         self._sessions[s.session_id] = s
         self._messages[s.session_id] = []
         return s
+
+    async def set_workflow(self, user_id: str, session_id: str, workflow: str) -> None:
+        s = self._owned(user_id, session_id)
+        if s is not None and s.workflow is None:
+            self._sessions[session_id] = s.model_copy(update={"workflow": workflow})
+
+    async def reassign(self, from_user: str, to_user: str) -> int:
+        moved = 0
+        for sid, s in list(self._sessions.items()):
+            if s.user_id == from_user:
+                self._sessions[sid] = s.model_copy(update={"user_id": to_user})
+                moved += 1
+        return moved
 
     async def get_session(self, user_id: str, session_id: str) -> Session | None:
         return self._owned(user_id, session_id)
@@ -173,7 +189,7 @@ class MemoryChatStore:
 
 # ---- openGauss ---------------------------------------------------------------------------
 
-_SESSION = "session_id, user_id, title, message_count, created_at, updated_at"
+_SESSION = "session_id, user_id, title, message_count, workflow, created_at, updated_at"
 _MESSAGE = ("m.message_id, m.session_id, m.seq, m.role, m.content, m.status, m.citations, "
             "m.tool_calls, m.model, m.kb_version, m.error, m.feedback, m.created_at")
 
@@ -219,6 +235,17 @@ class PgChatStore:
                 " updated_at) VALUES (%s, %s, %s, 0, %s, %s)",
                 (s.session_id, user_id, title, now, now))
         return s
+
+    async def set_workflow(self, user_id: str, session_id: str, workflow: str) -> None:
+        async with await self._conn() as conn:
+            await conn.execute("UPDATE chat_session SET workflow = %s WHERE session_id = %s AND "
+                               "user_id = %s AND workflow IS NULL", (workflow, session_id, user_id))
+
+    async def reassign(self, from_user: str, to_user: str) -> int:
+        async with await self._conn() as conn:
+            cur = await conn.execute("UPDATE chat_session SET user_id = %s WHERE user_id = %s",
+                                     (to_user, from_user))
+            return cur.rowcount
 
     async def get_session(self, user_id: str, session_id: str) -> Session | None:
         async with await self._conn() as conn:

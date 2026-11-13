@@ -64,3 +64,15 @@ async def test_sessions_messages_and_scoping(chat_store):
     assert await chat_store.delete_session("alice", s.session_id)
     assert await chat_store.get_session("alice", s.session_id) is None
     assert await chat_store.list_sessions("alice", 10, 0) == []
+
+
+async def test_workflow_and_claim(chat_store):
+    s = await chat_store.create_session("client:abc", "报表")
+    await chat_store.set_workflow("client:abc", s.session_id, "monitoring_report")
+    await chat_store.set_workflow("client:abc", s.session_id, "system_info")  # first one wins
+    got = await chat_store.get_session("client:abc", s.session_id)
+    assert got.workflow == "monitoring_report"
+    assert await chat_store.reassign("client:abc", "zhang.san") == 1
+    assert await chat_store.get_session("client:abc", s.session_id) is None
+    assert (await chat_store.get_session("zhang.san", s.session_id)).workflow == \
+        "monitoring_report"

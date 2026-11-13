@@ -1,69 +1,77 @@
 #!/usr/bin/env python
-"""Run the daily station analysis once (the API also runs it every day at ANALYSIS_RUN_AT).
+"""Run the maintenance analysis locally, the way the main server calls it
+(POST /internal/v1/maintenance/analyses): useful to try rules and explanations without the
+main server.
 
-  python scripts/analyze.py                     # yesterday (ANALYSIS_TIMEZONE)
-  python scripts/analyze.py --date 2026-11-08
-  python scripts/analyze.py --force             # new revision even if the day was analysed
-  python scripts/analyze.py --show              # print every record with its events
+  python scripts/analyze.py --site AS06                       # general, last 24 h
+  python scripts/analyze.py --site AS03 --type detector --hours 12
+  python scripts/analyze.py --all                             # every station, summary table
+  python scripts/analyze.py --site AS06 --json                # the exact response JSON
+  python scripts/analyze.py --all --no-llm                    # rule templates only
 
-Results go to openGauss (OPENGAUSS_DSN); without it they are only printed.
-Uses the configured LLM for explanations (LLM_PROVIDER); --no-llm forces templates.
+Nothing is stored (the main server owns results and work orders). Uses the configured LLM
+for explanations (LLM_PROVIDER); the current MQTT watermark is sent as mqtt_watermark.
 """
 
 import sys
-from datetime import date, timedelta
+import uuid
+from datetime import UTC, datetime, timedelta
 
 import _common
 
 from app.deps import build_resources
 from app.ingestion.pipeline import run
+from app.maintenance.schemas import AnalysisError, AnalysisRequest
 
 
 async def go(args, s) -> int:
     r = build_resources(s)
     try:
-        day = date.fromisoformat(args.date) if args.date else \
-            r.analysis.today() - timedelta(days=1)
-        batch = await r.analysis.run_now(day, force=args.force)
-        if batch is None:
-            print("batch not found")
-            return 1
-        print(f"batch {batch.batch_id}: {batch.status.value} (trigger {batch.trigger}, "
-              f"attempt {batch.attempts})")
-        print(f"  counts: {batch.counts}")
-        for g in batch.config_gaps:
-            print(f"  gap    {g['station_id']} {g['scope']}: {g['message']}")
-        for e in batch.errors:
-            print(f"  error  {e.get('station_id')}/{e.get('device_id')}: {e['error']}")
-        records, _ = await r.analysis.store.list_records(batch.batch_id, {}, 200, 0)
-        for rec in records:
-            ex = rec.explanation
-            print(f"  [{rec.level.value:17}] {rec.station_id}/{rec.device_id:8} {rec.title}"
-                  f"  ({ex.method if ex else '-'}, confidence {ex.confidence if ex else '-'})")
-            if args.show:
-                full = await r.analysis.store.get_record(rec.record_id)
-                for ev in full.events or []:
-                    tz = r.analysis.tz
-                    print(f"      {ev.code} {ev.start.astimezone(tz):%H:%M:%S}-"
-                          f"{ev.end.astimezone(tz):%H:%M:%S} {ev.kind} {ev.level.value} "
-                          f"{ev.source.value} n={ev.sample_count} max={ev.max}")
-                if ex:
-                    print(f"      summary: {ex.summary}")
-                    if ex.error:
-                        print(f"      fallback reason: {ex.error}")
-        return 0 if batch.status.value in ("succeeded", "partial") else 1
+        sites = [st.station_id for st in await r.stations.all()] if args.all else [args.site]
+        end = datetime.now(UTC)
+        start = end - timedelta(hours=args.hours)
+        watermark = await r.station_data.watermark()
+        failed = 0
+        for site in sites:
+            req = AnalysisRequest(analysis_id=f"cli-{uuid.uuid4().hex[:10]}", site_id=site,
+                                  analysis_type=args.type,
+                                  observation_window={"start": start, "end": end},
+                                  mqtt_watermark=str(watermark) if watermark else None)
+            try:
+                res = await r.maintenance.analyze(req)
+            except AnalysisError as exc:
+                print(f"{site:6} ERROR {exc.status} {exc.code}: {exc.message}")
+                failed += 1
+                continue
+            if args.json:
+                print(res.model_dump_json(indent=2))
+                continue
+            print(f"{site:6} {res.health_level:17} {res.explanation_source:8} "
+                  f"completeness={res.data_snapshot.completeness:.3f}")
+            for f in res.findings:
+                print(f"         finding  {f.severity:7} {f.rule_id}: {f.message}")
+            for a in res.actions:
+                print(f"         action   {a.priority:9} {a.text}")
+            for lim in res.limitations:
+                print(f"         limit    {lim.text}")
+            if not args.all:
+                print(f"         explain  {res.explanation}")
+        return 1 if failed else 0
     finally:
         await r.close()
 
 
 def main() -> None:
     p = _common.parser(__doc__)
-    p.add_argument("--date", help="YYYY-MM-DD (default: yesterday)")
-    p.add_argument("--force", action="store_true")
-    p.add_argument("--show", action="store_true")
-    p.add_argument("--no-llm", action="store_true")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--site", help="station id, e.g. AS06")
+    g.add_argument("--all", action="store_true", help="every station")
+    p.add_argument("--type", choices=["detector", "backup_power", "general"], default="general")
+    p.add_argument("--hours", type=float, default=24, help="observation window (default 24)")
+    p.add_argument("--json", action="store_true", help="print the response JSON")
+    p.add_argument("--no-llm", action="store_true", help="rule template explanations")
     args = p.parse_args()
-    s = _common.settings(args, analysis_use_llm=False if args.no_llm else None)
+    s = _common.settings(args, maintenance_use_llm=False if args.no_llm else None)
     sys.exit(run(go(args, s)))
 
 

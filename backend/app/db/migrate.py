@@ -29,8 +29,9 @@ async def bootstrap(admin_dsn: str, app_dsn: str) -> list[str]:
             done.append(f"created user {user}")
         if not await (await conn.execute("SELECT 1 FROM pg_database WHERE datname = %s",
                                          (dbname,))).fetchone():
-            template = ("CREATE DATABASE {} DBCOMPATIBILITY 'PG' OWNER {}" if opengauss
-                        else "CREATE DATABASE {} OWNER {}")
+            template = ("CREATE DATABASE {} DBCOMPATIBILITY 'PG' ENCODING 'UTF8' "
+                        "TEMPLATE template0 OWNER {}" if opengauss
+                        else "CREATE DATABASE {} ENCODING 'UTF8' TEMPLATE template0 OWNER {}")
             await conn.execute(sql.SQL(template).format(sql.Identifier(dbname),
                                                         sql.Identifier(user)))
             done.append(f"created database {dbname}")

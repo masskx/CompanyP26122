@@ -1,8 +1,8 @@
 """Apache IoTDB access (tree model).
 
-Layout:  <IOTDB_ROOT>.<station_id>.<device_id>.<metric>     per device
-         <IOTDB_ROOT>.<station_id>._station.<metric>        per station (battery, shelter)
-         e.g. root.mes.`ST01`.`D02`.`dose_rate`, root.mes.`ST01`.`_station`.`battery_voltage`
+Layout:  <IOTDB_ROOT>.<site_id>.<equipment_id>.<metric>
+         e.g. root.mes.`AS01`.`AS01-DET-01`.`dose_rate`, root.mes.`AS01`.`AS01-BAT-01`.`ac_power`
+         consumption watermark: root.mes.`_sys`.`ingest`.`watermark`
 Values are DOUBLE (dose rate in µGy/h; statuses / flags as codes, see app/stations/model.py),
 timestamps in milliseconds (UTC).
 
@@ -43,10 +43,15 @@ class Bucket:
 @dataclass(frozen=True, slots=True)
 class Measurement:
     site: str
-    device_id: str
+    device_id: str   # equipment id
     metric: str
     time: datetime
     value: float
+
+
+# Consumption watermark of the MQTT ingester (highest source_sequence fully written),
+# stored as its own series so the API process can read what the ingester process wrote.
+WATERMARK_SERIES = ("_sys", "ingest", "watermark")
 
 
 class TimeSeriesStore(Protocol):

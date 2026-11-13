@@ -1,23 +1,22 @@
 """Message formats -> Measurement (the only code that knows the wire format).
 
 INGEST_PARSER selects the format:
-  simulator     built-in station packet used by the simulator until the real format is known
-                topic   <INGEST_TOPIC_PREFIX>/<station_id>
-                payload {"ts": <epoch ms | ISO-8601 with zone>,
-                         "devices": [{"id": "D01", "dose_rate": 0.085, "unit": "uGy/h",
-                                      "status": "normal|h1|h2|fault|offline",
-                                      "comm": "ok|interrupted"}, ...],
-                         "battery": {"voltage": 13.4, "level": 98, "ac_power": "on|off",
-                                     "charging": true},
-                         "shelter": {"temperature": 22.5, "humidity": 46, "door": "closed"},
-                         "rainfall": 0.0}            every block / field optional
-  mapping       a real format described in a JSON file (INGEST_MAPPING_FILE), no code needed;
-                see data/mqtt/mapping.example.json
+  telemetry_v1  the main server's MQTT contract (default; the simulator publishes it too)
+                topic   maintenance/v1/{site_id}/{equipment_id}/telemetry   (QoS 1)
+                payload {"schema_version": "1", "message_id": "...", "source_sequence": 18427,
+                         "site_id": "AS01", "equipment_id": "AS01-DET-01",
+                         "event_time": "2026-10-15T10:24:00+08:00",
+                         "points": [{"metric": "dose_rate", "value": 0.286, "unit": "uGy/h",
+                                     "quality": "good"}, ...]}
+                A single point may also be sent inline (metric / value / unit / quality next to
+                event_time). Status values: normal | h1 | h2 | fault | offline; flags:
+                on/off, true/false, 1/0. quality "bad" / "invalid" points are dropped.
+  mapping       another format described in a JSON file (INGEST_MAPPING_FILE), no code needed
   module:Class  your own parser class, constructed with `settings`, providing parse()
 
 Dose rates are normalised to µGy/h (nGy/h, µGy/h, mGy/h accepted). Sievert units are
 rejected: converting Sv to Gy needs a conversion coefficient the plant has to confirm.
-Statuses and on/off flags become numeric codes (app/stations/model.py).
+`source_sequence` feeds the consumption watermark the analysis API waits for.
 """
 
 import importlib
@@ -33,7 +32,7 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, Field
 
 from app.config import Settings
-from app.stations.model import OFF, ON, STATION_NODE, STATUS_CODES, DeviceStatus, Metric
+from app.stations.model import OFF, ON, STATUS_CODES, DeviceStatus, Metric
 from app.timeseries.iotdb import Measurement
 
 DOSE_RATE_UNITS = {"nGy/h": 1e-3, "uGy/h": 1.0, "µGy/h": 1.0, "μGy/h": 1.0, "mGy/h": 1e3}
@@ -117,67 +116,106 @@ def status_code(value: Any) -> float:
         raise Rejected("unknown_status", str(value)[:20]) from exc
 
 
-class SimulatorFormat:
-    """Station packet (one message per station and sampling instant)."""
+_GOOD_QUALITY = {"good", "valid", "ok", "uncertain", "有效"}
+_BAD_QUALITY = {"bad", "invalid", "无效"}
+_FLAG_METRICS = {Metric.COMM, Metric.AC_POWER, Metric.CHARGING, Metric.DOOR}
 
-    def __init__(self, topic_prefix: str = "sim/stations") -> None:
+
+def convert(metric: str, value: Any, unit: Any) -> float:
+    """One reported value -> stored number (µGy/h for dose rates, codes for statuses)."""
+    try:
+        m = Metric(metric)
+    except ValueError as exc:
+        raise Rejected("unknown_metric", str(metric)[:40]) from exc
+    if m == Metric.STATUS:
+        return status_code(value)
+    if m in _FLAG_METRICS:
+        return flag(value)
+    if m in (Metric.DOSE_RATE, Metric.DOSE_RATE_AVG, Metric.DOSE_RATE_STD):
+        return dose_rate(value, unit if unit not in (None, "") else "uGy/h")
+    return number(value)
+
+
+class TelemetryV1Format:
+    """maintenance/v1/{site_id}/{equipment_id}/telemetry (see module docstring)."""
+
+    def __init__(self, topic_prefix: str = "maintenance/v1") -> None:
         self.prefix = [p for p in topic_prefix.strip("/").split("/") if p]
         self.partial_rejections: Counter[str] = Counter()
+        self.last_sequence: int | None = None  # of the last message seen (accepted or not)
+        self._seq = 0
 
-    def encode(self, station_id: str, time: datetime, devices: list[dict],
-               battery: dict | None = None, shelter: dict | None = None,
-               rainfall: float | None = None) -> RawMessage:
-        body: dict[str, Any] = {"ts": int(time.timestamp() * 1000), "devices": devices}
-        if battery is not None:
-            body["battery"] = battery
-        if shelter is not None:
-            body["shelter"] = shelter
-        if rainfall is not None:
-            body["rainfall"] = rainfall
-        return RawMessage("/".join([*self.prefix, station_id]),
+    # -- encoding (simulator / tests) --------------------------------------------------------
+
+    def encode(self, site_id: str, equipment_id: str, time: datetime, points: dict[str, Any],
+               sequence: int | None = None, units: dict[str, str] | None = None
+               ) -> RawMessage:
+        if sequence is None:
+            self._seq += 1
+            sequence = self._seq
+        body = {"schema_version": "1",
+                "message_id": f"{site_id}:{equipment_id}:{int(time.timestamp() * 1000)}",
+                "source_sequence": sequence, "site_id": site_id, "equipment_id": equipment_id,
+                "event_time": time.isoformat(),
+                "points": [{"metric": k, "value": v, "quality": "good",
+                            **({"unit": units[k]} if units and k in units else {})}
+                           for k, v in points.items() if v is not None]}
+        return RawMessage("/".join([*self.prefix, site_id, equipment_id, "telemetry"]),
                           json.dumps(body, ensure_ascii=False).encode())
 
+    # -- parsing -------------------------------------------------------------------------------
+
     def parse(self, message: RawMessage) -> list[Measurement]:
+        self.last_sequence = None
         parts = message.topic.split("/")
         n = len(self.prefix)
-        if len(parts) != n + 1 or parts[:n] != self.prefix or not parts[n]:
+        if len(parts) != n + 3 or parts[:n] != self.prefix or parts[-1] != "telemetry" \
+                or not parts[n] or not parts[n + 1]:
             raise Rejected("bad_topic", message.topic[:100])
+        site, equipment = parts[n], parts[n + 1]
         try:
             body = json.loads(message.payload)
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise Rejected("bad_payload", "not JSON") from exc
         if not isinstance(body, dict):
             raise Rejected("bad_payload", "not an object")
-        station, t = parts[n], parse_time(body.get("ts"))
+        seq = body.get("source_sequence")
+        if isinstance(seq, str) and seq.isdigit():
+            seq = int(seq)
+        if isinstance(seq, int) and not isinstance(seq, bool):
+            self.last_sequence = seq
+        if str(body.get("schema_version", "1")).split(".")[0] != "1":
+            raise Rejected("unsupported_schema", str(body.get("schema_version"))[:10])
+        if body.get("site_id", site) != site or body.get("equipment_id", equipment) != equipment:
+            raise Rejected("topic_mismatch", f"{site}/{equipment}")
+        t = parse_time(body.get("event_time", body.get("ts")))
+        points = body.get("points")
+        if points is None:
+            points = [body]
+        if not isinstance(points, list):
+            raise Rejected("bad_payload", "points is not a list")
         out: list[Measurement] = []
         errors: list[str] = []
-
-        def add(device: str, metric: Metric, convert, *args) -> None:
-            if any(a is None or a is _MISSING for a in args[:1]):
-                return
-            try:
-                out.append(Measurement(station, device, metric.value, t, convert(*args)))
-            except Rejected as exc:  # one bad field does not discard the rest
-                errors.append(exc.reason)
-
-        for d in body.get("devices") or []:
-            if not isinstance(d, dict) or not d.get("id"):
-                errors.append("bad_device")
+        for p in points:
+            if not isinstance(p, dict) or not p.get("metric"):
+                errors.append("bad_point")
                 continue
-            dev = str(d["id"])
-            add(dev, Metric.DOSE_RATE, dose_rate, d.get("dose_rate"), d.get("unit", "uGy/h"))
-            add(dev, Metric.STATUS, status_code, d.get("status"))
-            add(dev, Metric.COMM, flag, d.get("comm"))
-        b = body.get("battery") or {}
-        add(STATION_NODE, Metric.BATTERY_VOLTAGE, number, b.get("voltage"))
-        add(STATION_NODE, Metric.BATTERY_LEVEL, number, b.get("level"))
-        add(STATION_NODE, Metric.AC_POWER, flag, b.get("ac_power"))
-        add(STATION_NODE, Metric.CHARGING, flag, b.get("charging"))
-        sh = body.get("shelter") or {}
-        add(STATION_NODE, Metric.SHELTER_TEMP, number, sh.get("temperature"))
-        add(STATION_NODE, Metric.SHELTER_HUMIDITY, number, sh.get("humidity"))
-        add(STATION_NODE, Metric.DOOR, flag, sh.get("door"))
-        add(STATION_NODE, Metric.RAINFALL, number, body.get("rainfall"))
+            quality = str(p.get("quality", "good")).strip().lower()
+            if quality in _BAD_QUALITY:
+                errors.append("bad_quality")
+                continue
+            if quality not in _GOOD_QUALITY:
+                errors.append("unknown_quality")
+                continue
+            if p.get("value") is None:
+                errors.append("missing_value")
+                continue
+            try:
+                out.append(Measurement(site, equipment, str(p["metric"]),
+                                       parse_time(p["event_time"]) if p.get("event_time") else t,
+                                       convert(str(p["metric"]), p.get("value"), p.get("unit"))))
+            except Rejected as exc:  # one bad point does not discard the others
+                errors.append(exc.reason)
         if errors and not out:
             self.partial_rejections.update(errors[1:])
             raise Rejected(errors[0])
@@ -189,7 +227,7 @@ class SimulatorFormat:
 
 class _Target(BaseModel):
     station_id: str
-    device_id: str  # use "_station" for station-level metrics
+    device_id: str  # equipment id: detector, <site>-BAT-01 or <site>-ENV-01
 
 
 class _Fields(BaseModel):
@@ -306,8 +344,8 @@ class MappingParser:
 
 
 def build_parser(s: Settings) -> Parser:
-    if s.ingest_parser == "simulator":
-        return SimulatorFormat(s.ingest_topic_prefix)
+    if s.ingest_parser in ("telemetry_v1", "simulator"):
+        return TelemetryV1Format(s.ingest_topic_prefix)
     if s.ingest_parser == "mapping":
         if s.ingest_mapping_file is None:
             raise ValueError("INGEST_PARSER=mapping needs INGEST_MAPPING_FILE")

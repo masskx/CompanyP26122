@@ -1,0 +1,93 @@
+{
+ "_comment": "Versioned standard action catalogue (MAINTENANCE_ACTION_CATALOG_PATH). Findings map to ordered action codes; the analysis offers at most 3 distinct candidates in finding order, the model may choose which one is the primary suggestion, and the text is never rewritten. Bump 'version' on every change.",
+ "version": "maintenance-actions-2026.11.1",
+ "actions": {
+  "detector.onsite_inspection": "安排授权人员现场核查探测器及周边辐射环境",
+  "detector.verify_rainfall_context": "核对同期降雨、方舱温湿度和周边作业记录",
+  "detector.compare_neighbors": "对比相邻站点同时段剂量率，排除区域性变化",
+  "detector.check_high_voltage": "复核探测器高压、自检记录和通信状态",
+  "detector.fault_diagnosis": "查看设备自检与故障代码，必要时安排检修",
+  "detector.check_acquisition": "检查采集程序与探测器输出，确认读数是否卡滞",
+  "detector.verify_alarm_record": "核对设备报警记录与读数，确认报警原因",
+  "backup.check_mains_supply": "核查外部交流供电恢复情况，评估剩余续航",
+  "backup.check_charging_path": "检查充电模块、接线和实际负载",
+  "backup.capacity_test": "安排受控容量测试，评估是否需要更换蓄电池",
+  "backup.compare_recovery": "对比市电恢复后的充电过程与历史基线，持续观察恢复情况",
+  "history.review_previous_events": "调阅同设备历史事件与人工审核结论，评估是否升级检修"
+ },
+ "rules": {
+  "detector.dose_rate_alarm": [
+   "detector.onsite_inspection",
+   "detector.verify_rainfall_context",
+   "detector.check_high_voltage"
+  ],
+  "detector.dose_rate_warning": [
+   "detector.verify_rainfall_context",
+   "detector.compare_neighbors",
+   "detector.check_high_voltage"
+  ],
+  "detector.alarm_point": [
+   "detector.verify_alarm_record",
+   "detector.compare_neighbors",
+   "detector.check_high_voltage"
+  ],
+  "detector.device_alarm": [
+   "detector.verify_alarm_record",
+   "detector.onsite_inspection",
+   "detector.check_high_voltage"
+  ],
+  "detector.rainfall_correlated_rise": [
+   "detector.verify_rainfall_context",
+   "detector.compare_neighbors",
+   "detector.check_high_voltage"
+  ],
+  "detector.dose_rate_rise": [
+   "detector.compare_neighbors",
+   "detector.check_high_voltage",
+   "detector.verify_rainfall_context"
+  ],
+  "detector.device_fault": [
+   "detector.fault_diagnosis",
+   "detector.check_high_voltage",
+   "detector.onsite_inspection"
+  ],
+  "detector.stuck_reading": [
+   "detector.check_acquisition",
+   "detector.check_high_voltage",
+   "detector.fault_diagnosis"
+  ],
+  "backup.voltage_below_alarm": [
+   "backup.check_mains_supply",
+   "backup.capacity_test",
+   "backup.check_charging_path"
+  ],
+  "backup.voltage_below_warning": [
+   "backup.check_mains_supply",
+   "backup.check_charging_path",
+   "backup.capacity_test"
+  ],
+  "backup.mains_lost": [
+   "backup.check_mains_supply",
+   "backup.capacity_test",
+   "backup.check_charging_path"
+  ],
+  "backup.voltage_drop_on_mains": [
+   "backup.check_charging_path",
+   "backup.capacity_test",
+   "backup.compare_recovery"
+  ],
+  "backup.slow_recharge": [
+   "backup.compare_recovery",
+   "backup.check_charging_path",
+   "backup.capacity_test"
+  ],
+  "backup.runtime_drop": [
+   "backup.check_charging_path",
+   "backup.capacity_test",
+   "backup.compare_recovery"
+  ],
+  "history.repeated_event": [
+   "history.review_previous_events"
+  ]
+ }
+}

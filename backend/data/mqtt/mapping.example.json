@@ -1,16 +1,41 @@
 {
-  "_comment": "EXAMPLE ONLY: an invented vendor format showing how to describe the real MQTT format without code. Topic plant/<station>/gamma/<gateway>; each message carries a list of readings with ISO-8601 times; dose rates in nGy/h unless a unit is given; vendor states map to normal|h1|h2|fault|offline (stored, never dropped); vendor ids map to stations.json ids (device_id \"_station\" = station-level metric such as battery_voltage). Test with: python scripts/ingest_mqtt.py --file data/mqtt/captured.example.jsonl --dry-run --parser mapping --mapping data/mqtt/mapping.example.json",
+  "_comment": "EXAMPLE ONLY: an invented vendor format showing how to describe the real MQTT format without code. Topic plant/<station>/gamma/<gateway>; each message carries a list of readings with ISO-8601 times; dose rates in nGy/h unless a unit is given; vendor states map to normal|h1|h2|fault|offline (stored, never dropped); vendor ids map to stations.json equipment ids (detector, <site>-BAT-01 for battery metrics, <site>-ENV-01 for shelter metrics). Test with: python scripts/ingest_mqtt.py --file data/mqtt/captured.example.jsonl --dry-run --parser mapping --mapping data/mqtt/mapping.example.json Not needed when the main server publishes the telemetry_v1 contract (the default parser).",
   "topic_pattern": "^plant/(?P<station>[^/]+)/gamma/(?P<gateway>[^/]+)$",
   "records_path": "readings",
-  "fields": {"device": "deviceId", "timestamp": "time", "value": "value", "unit": "unit", "status": "state", "metric": "metric"},
+  "fields": {
+    "device": "deviceId",
+    "timestamp": "time",
+    "value": "value",
+    "unit": "unit",
+    "status": "state",
+    "metric": "metric"
+  },
   "default_unit": "nGy/h",
   "default_metric": "dose_rate",
-  "status_map": {"NORMAL": "normal", "ALARM1": "h1", "ALARM2": "h2", "FAULT": "fault", "OFFLINE": "offline"},
+  "status_map": {
+    "NORMAL": "normal",
+    "ALARM1": "h1",
+    "ALARM2": "h2",
+    "FAULT": "fault",
+    "OFFLINE": "offline"
+  },
   "device_map": {
-    "GM-0001": {"station_id": "ST01", "device_id": "D01"},
-    "GM-0002": {"station_id": "ST01", "device_id": "D02"},
-    "GM-0003": {"station_id": "ST01", "device_id": "D03"},
-    "PWR-01":  {"station_id": "ST01", "device_id": "_station"}
+    "GM-0001": {
+      "station_id": "AS01",
+      "device_id": "AS01-DET-01"
+    },
+    "GM-0002": {
+      "station_id": "AS02",
+      "device_id": "AS02-DET-01"
+    },
+    "GM-0003": {
+      "station_id": "AS03",
+      "device_id": "AS03-DET-01"
+    },
+    "PWR-01": {
+      "station_id": "AS01",
+      "device_id": "AS01-BAT-01"
+    }
   },
   "unmapped_devices": "reject"
 }
