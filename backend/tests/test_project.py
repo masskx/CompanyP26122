@@ -68,6 +68,7 @@ def test_simulate_to_stdout():
                        capture_output=True, text=True, timeout=60, cwd=BASE_DIR)
     assert r.returncode == 0, r.stderr
     assert '"metric": "dose_rate"' in r.stdout and '"metric": "battery_voltage"' in r.stdout
+    assert '"device_id": "AS06-BAT-01"' in r.stdout
 
 
 def test_build_knowledge_dry_run():
@@ -78,11 +79,15 @@ def test_build_knowledge_dry_run():
 
 
 def test_analyze_script_without_databases(tmp_path):
-    """Memory mode: no IoTDB data -> every configured device is reported as missing data."""
+    """Memory mode without data: the analysis says so instead of guessing."""
     env = tmp_path / "env"
-    env.write_text("TIMESERIES_BACKEND=memory\nANALYSIS_SCHEDULE_ENABLED=false\n")
-    r = subprocess.run([sys.executable, "scripts/analyze.py", "--env-file", str(env)],
-                       capture_output=True, text=True, timeout=120, cwd=BASE_DIR)
+    env.write_text("TIMESERIES_BACKEND=memory\n")
+    r = subprocess.run([sys.executable, "scripts/analyze.py", "--env-file", str(env),
+                        "--site", "AS06"], capture_output=True, text=True, timeout=120,
+                       cwd=BASE_DIR)
     assert r.returncode == 0, r.stderr
-    assert "succeeded" in r.stdout and "no_data" not in r.stdout
-    assert "分析窗口内无剂量率数据" in r.stdout and "ST03 dose_thresholds" in r.stdout
+    assert "insufficient_data" in r.stdout and "无可用剂量率数据" in r.stdout
+    r = subprocess.run([sys.executable, "scripts/analyze.py", "--env-file", str(env),
+                        "--site", "XX99"], capture_output=True, text=True, timeout=120,
+                       cwd=BASE_DIR)
+    assert r.returncode == 1 and "site_not_found" in r.stdout

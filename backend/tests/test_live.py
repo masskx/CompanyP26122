@@ -14,7 +14,7 @@ from app.rag.embeddings import GLMEmbeddings
 from app.rag.ingest import build
 from app.rag.retriever import Retriever
 from app.rag.store import KnowledgeStore
-from app.stations.store import MemoryStationStore
+from app.stations.store import StationStore
 
 from .conftest import KNOWLEDGE, STATIONS
 
@@ -28,8 +28,7 @@ def live_settings():
             not os.environ.get("GLM_API_KEY"):
         pytest.skip("DEEPSEEK_API and GLM_API_KEY required")
     return Settings(_env_file=None, llm_provider="deepseek", embedding_provider="zhipu",
-                    timeseries_backend="memory", stations_file=STATIONS,
-                    analysis_schedule_enabled=False)
+                    timeseries_backend="memory", stations_file=STATIONS)
 
 
 def test_glm_embedding(live_settings):
@@ -46,17 +45,18 @@ async def test_agent_end_to_end(live_settings, store, stations, tmp_path):
     emb = GLMEmbeddings.from_settings(live_settings)
     build(KNOWLEDGE, kb, emb)
     r = build_resources(live_settings, timeseries=store,
-                        stations=MemoryStationStore(stations), chat_store=MemoryChatStore(),
+                        stations=StationStore(stations), chat_store=MemoryChatStore(),
                         retriever=Retriever(kb, emb, top_k=4, min_score=0.3))
     for question, tool, kind in [
         ("85 nGy/h 换算成 µGy/h 是多少？请给出依据。", "search_knowledge", "knowledge"),
-        ("ST01 站 D02 探测器最近6小时剂量率趋势如何？", "get_telemetry", "data"),
+        ("AS06 站探测器最近6小时剂量率趋势如何？", "get_telemetry", "data"),
     ]:
         out = await r.chat.ask("live-test", question, None)
         m = out["message"]
         print(f"\nQ: {question}\nA: {m['content'][:300]}\ntools={m['tools_used']} "
               f"citations={[(c['ref'], c['kind'], c['title']) for c in m['citations']]}")
-        assert m["status"] == "complete" and tool in m["tools_used"] or \
-            any(t.startswith("get_") for t in m["tools_used"])
+        # a data question may go to a preset workflow (no tool calls) or to the agent's tools
+        assert m["status"] == "complete"
+        assert kind == "data" or tool in m["tools_used"]
         assert any(c["kind"] == kind for c in m["citations"])
     kb.close()

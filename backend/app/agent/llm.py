@@ -6,7 +6,8 @@ from langchain_openai import ChatOpenAI
 from app.config import Settings
 
 
-def build_llm(s: Settings) -> ChatOpenAI | None:
+def build_llm(s: Settings, *, model: str | None = None, streaming: bool = True
+              ) -> ChatOpenAI | None:
     if s.llm_provider == "none":
         return None
     extra = {}
@@ -14,10 +15,11 @@ def build_llm(s: Settings) -> ChatOpenAI | None:
         # Qwen3: thinking off by default (reasoning is never shown to users).
         extra["extra_body"] = {"chat_template_kwargs": {"enable_thinking": s.llm_enable_thinking}}
     return ChatOpenAI(
-        model=s.llm_model_name, base_url=s.llm_url,
+        model=model or s.llm_model_name, base_url=s.llm_url,
         api_key=s.llm_key or "EMPTY",  # vLLM without --api-key accepts any value
         temperature=s.llm_temperature, max_tokens=s.llm_max_tokens,
-        timeout=s.llm_timeout_seconds, max_retries=2, streaming=True, stream_usage=True,
+        timeout=s.llm_timeout_seconds, max_retries=2, streaming=streaming,
+        stream_usage=streaming,
         **extra,
     )
 

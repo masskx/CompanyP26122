@@ -1,37 +1,44 @@
 """Builds every service from settings once at startup; routes get them via `get_resources`.
 
-openGauss (OPENGAUSS_DSN) holds station configuration, analysis results and conversations;
-without it the station file is used and everything else stays in memory (demos, tests).
+openGauss (OPENGAUSS_DSN) stores only conversations (sessions, messages, report records) and
+the copy of the main server's work orders. Without it both stay in memory (demos, tests).
+The station directory is a file (STATIONS_FILE).
 
-`get_current_user` is the single place that decides who the end user is. There is no login
-yet: it returns the optional X-User-Id header (identification only, NOT authentication) or
-"anonymous". When the client application adds login, verify its token here and return the
-user's id from the client's user table; nothing else changes.
+Who the end user is (`get_current_user`), until the client application has login:
+  X-User-Id      set by the main server for an identified user          -> "<id>"
+  X-Client-Id    random id the browser keeps in localStorage           -> "client:<id>"
+  neither                                                               -> "anonymous"
+This identifies, it does not authenticate (the service token / API key authenticates the
+caller). When login exists, POST /api/v1/sessions/claim moves a browser's conversations to
+the user. Roles (X-User-Roles) are not used yet.
 """
 
 import logging
 import re
 import secrets
 from dataclasses import dataclass
-from zoneinfo import ZoneInfo
+from pathlib import Path
 
 from fastapi import Header, HTTPException, Request
 
 from app.agent.chat import ChatService
 from app.agent.graph import build_graph
 from app.agent.llm import build_llm, model_label
+from app.agent.reports import MemoryReportStore, PgReportStore, ReportStore
 from app.agent.tools import ALL_TOOLS, DATA_TOOLS
-from app.analysis.batch import AnalysisService, Scheduler
-from app.analysis.explain import Explainer
-from app.analysis.store import AnalysisStore, MemoryAnalysisStore, PgAnalysisStore
 from app.config import Settings
 from app.db.chat_store import ChatStore, MemoryChatStore, PgChatStore
 from app.db.pool import PgPool
+from app.db.work_orders import MemoryWorkOrderStore, PgWorkOrderStore, WorkOrderStore
+from app.maintenance.actions import ActionCatalog
+from app.maintenance.narrator import Narrator
+from app.maintenance.service import HistorySource, MaintenanceService
 from app.rag.embeddings import GLMEmbeddings
+from app.rag.rerank import Reranker
 from app.rag.retriever import Retriever
 from app.rag.store import KnowledgeStore
 from app.stations.service import StationService
-from app.stations.store import MemoryStationStore, PgStationStore, StationStore
+from app.stations.store import StationStore
 from app.timeseries.iotdb import IoTDB, MemoryTimeSeries, TimeSeriesStore
 
 logger = logging.getLogger(__name__)
@@ -44,20 +51,19 @@ class Resources:
     timeseries: TimeSeriesStore
     stations: StationStore
     station_data: StationService
-    analysis: AnalysisService
+    maintenance: MaintenanceService
+    work_orders: WorkOrderStore
+    reports: ReportStore
     chat_store: ChatStore
     chat: ChatService
     retriever: Retriever | None = None
     knowledge: KnowledgeStore | None = None
     pool: PgPool | None = None
-    scheduler: Scheduler | None = None  # set by the app lifespan when scheduling is on
 
     async def close(self) -> None:
-        await self.analysis.close()
         await self.timeseries.close()
         await self.chat_store.close()
-        await self.stations.close()
-        await self.analysis.store.close()
+        await self.work_orders.close()
         if self.pool is not None:
             await self.pool.close()
         if self.knowledge is not None:
@@ -67,17 +73,17 @@ class Resources:
 def build_resources(s: Settings, *, timeseries: TimeSeriesStore | None = None,
                     chat_store: ChatStore | None = None, llm=None,
                     retriever: Retriever | None = None, stations: StationStore | None = None,
-                    analysis_store: AnalysisStore | None = None) -> Resources:
+                    work_orders: WorkOrderStore | None = None,
+                    reports: ReportStore | None = None) -> Resources:
     if timeseries is None:
         timeseries = IoTDB(s) if s.timeseries_backend == "iotdb" else MemoryTimeSeries()
     dsn = s.opengauss_dsn.get_secret_value() if s.opengauss_dsn is not None else None
-    pool = PgPool(dsn) if dsn and (stations is None or analysis_store is None) else None
+    pool = PgPool(dsn) if dsn and (work_orders is None or reports is None) else None
     if dsn is None:
-        logger.warning("OPENGAUSS_DSN not set: station configuration from %s, analysis results "
-                       "and conversations kept in memory only", s.stations_file)
-    stations = stations or (PgStationStore(pool) if pool else
-                            MemoryStationStore.from_file(s.stations_file))
-    analysis_store = analysis_store or (PgAnalysisStore(pool) if pool else MemoryAnalysisStore())
+        logger.warning("OPENGAUSS_DSN not set: conversations and work orders kept in memory")
+    stations = stations or StationStore.from_file(Path(s.stations_file))
+    work_orders = work_orders or (PgWorkOrderStore(pool) if pool else MemoryWorkOrderStore())
+    reports = reports or (PgReportStore(pool) if pool else MemoryReportStore())
     if chat_store is None:
         chat_store = PgChatStore(dsn) if dsn else MemoryChatStore()
     knowledge = None
@@ -90,38 +96,66 @@ def build_resources(s: Settings, *, timeseries: TimeSeriesStore | None = None,
                                        if s.milvus_token else None)
             retriever = Retriever(knowledge, embeddings, top_k=s.kb_top_k,
                                   min_score=s.kb_min_score, pinned_version=s.kb_version,
-                                  classifications=tuple(s.kb_classifications))
+                                  classifications=tuple(s.kb_classifications),
+                                  reranker=Reranker.from_settings(s),
+                                  candidates=s.kb_rerank_candidates)
     station_data = StationService(stations, timeseries)
     llm = llm if llm is not None else build_llm(s)
-    explainer = Explainer(llm, model_label(s) or ("fake" if llm is not None else None),
-                          ZoneInfo(s.analysis_timezone), use_llm=s.analysis_use_llm)
-    analysis = AnalysisService(analysis_store, stations, timeseries, explainer, s)
+    narrator_llm = build_llm(s, model=s.maintenance_narrator_model_name, streaming=False) \
+        if s.maintenance_narrator_model_name and llm is not None else llm
+    maintenance = MaintenanceService(
+        stations, station_data, HistorySource(work_orders, s),
+        Narrator(narrator_llm, s.maintenance_narrator_max_chars,
+                 s.maintenance_narrator_timeout_seconds),
+        ActionCatalog.load(Path(s.maintenance_action_catalog_path)), s,
+        (s.maintenance_narrator_model_name or s.llm_model_name or "fake")
+        if llm is not None else None)
     graph = build_graph(llm, ALL_TOOLS if retriever else DATA_TOOLS,
                         max_tool_rounds=s.agent_max_tool_rounds) if llm is not None else None
-    chat = ChatService(chat_store, graph, station_data, analysis, retriever,
-                       model=model_label(s), history_messages=s.agent_history_messages,
+    chat = ChatService(chat_store, graph, station_data, maintenance, work_orders, reports, s,
+                       retriever, model=model_label(s),
+                       history_messages=s.agent_history_messages,
                        max_input_chars=s.agent_max_input_chars,
                        max_tool_rounds=s.agent_max_tool_rounds)
-    return Resources(s, timeseries, stations, station_data, analysis, chat_store, chat,
-                     retriever, knowledge, pool)
+    return Resources(s, timeseries, stations, station_data, maintenance, work_orders, reports,
+                     chat_store, chat, retriever, knowledge, pool)
 
 
 def get_resources(request: Request) -> Resources:
     return request.app.state.resources
 
 
-def get_current_user(x_user_id: str | None = Header(default=None)) -> str:
-    if x_user_id is None or not x_user_id.strip():
-        return "anonymous"
-    if not _USER_ID.fullmatch(x_user_id.strip()):
-        raise HTTPException(status_code=400, detail="invalid X-User-Id")
-    return x_user_id.strip()
+def _clean(value: str | None, header: str) -> str | None:
+    if value is None or not value.strip():
+        return None
+    if not _USER_ID.fullmatch(value.strip()):
+        raise HTTPException(status_code=400, detail=f"invalid {header}")
+    return value.strip()
 
 
-def check_api_key(request: Request, x_api_key: str | None = Header(default=None)) -> None:
-    """Optional shared key (API_KEY). Disabled when API_KEY is empty."""
-    expected = request.app.state.resources.settings.api_key
-    if expected is None or not expected.get_secret_value():
+def get_current_user(x_user_id: str | None = Header(default=None),
+                     x_client_id: str | None = Header(default=None)) -> str:
+    user = _clean(x_user_id, "X-User-Id")
+    if user:
+        return user
+    client = _clean(x_client_id, "X-Client-Id")
+    return f"client:{client}" if client else "anonymous"
+
+
+def check_api_key(request: Request, x_api_key: str | None = Header(default=None),
+                  authorization: str | None = Header(default=None)) -> None:
+    """Service authentication: `Authorization: Bearer <COMPUTE_SERVICE_TOKEN>` (main server,
+    design doc) or `X-API-Key: <API_KEY>`. Open when neither is configured."""
+    s = request.app.state.resources.settings
+    expected = [(k.get_secret_value(), v) for k, v in
+                ((s.compute_service_token, "bearer"), (s.api_key, "key"))
+                if k is not None and k.get_secret_value()]
+    if not expected:
         return
-    if not secrets.compare_digest((x_api_key or "").encode(), expected.get_secret_value().encode()):
-        raise HTTPException(status_code=401, detail="invalid or missing X-API-Key")
+    bearer = authorization[7:].strip() if authorization and \
+        authorization[:7].lower() == "bearer " else None
+    for secret, kind in expected:
+        given = bearer if kind == "bearer" else x_api_key
+        if given and secrets.compare_digest(given.encode(), secret.encode()):
+            return
+    raise HTTPException(status_code=401, detail="invalid or missing service credentials")

@@ -3,8 +3,8 @@ stuck detector, battery rules."""
 
 from datetime import UTC, datetime, timedelta
 
-from app.analysis import rules
-from app.analysis.rules import Sample
+from app.maintenance import rules
+from app.maintenance.rules import Sample
 
 T0 = datetime(2026, 11, 8, tzinfo=UTC)
 GAP = timedelta(seconds=90)  # 3 x 30 s

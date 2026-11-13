@@ -52,17 +52,17 @@ def services(s, paid: bool, mqtt: bool) -> None:
 
     print("== openGauss")
     if s.opengauss_dsn is None:
-        skip("OPENGAUSS_DSN not set (conversations in memory)")
+        skip("OPENGAUSS_DSN not set (conversations and work orders in memory)")
     else:
         import psycopg
 
         try:
             with psycopg.connect(s.opengauss_dsn.get_secret_value(), connect_timeout=5) as c:
                 versions = [r[0] for r in c.execute("SELECT version FROM app_migrations")]
-                n = c.execute("SELECT COUNT(*) FROM station_config").fetchone()[0] \
-                    if "002_station_analysis" in versions else 0
-            check({"001_chat", "002_station_analysis"} <= set(versions),
-                  f"connected; migrations {versions}; {n} stations configured")
+                n = c.execute("SELECT COUNT(*) FROM maintenance_work_order").fetchone()[0] \
+                    if "003_work_orders_and_assistant" in versions else 0
+            check("003_work_orders_and_assistant" in versions,
+                  f"connected; migrations {versions}; {n} work orders copied")
         except Exception as exc:
             check(False, f"{exc} (run scripts/init_db.py)")
 
@@ -124,10 +124,17 @@ def services(s, paid: bool, mqtt: bool) -> None:
             check(False, f"MQTT: {exc}")
 
 
-def api(base: str, s) -> None:
-    headers = {"X-User-Id": "check-script"}
+def _service_headers(s) -> dict:
+    headers = {}
+    if s.compute_service_token:
+        headers["Authorization"] = f"Bearer {s.compute_service_token.get_secret_value()}"
     if s.api_key:
         headers["X-API-Key"] = s.api_key.get_secret_value()
+    return headers
+
+
+def api(base: str, s) -> None:
+    headers = {"X-User-Id": "check-script", **_service_headers(s)}
     c = httpx.Client(base_url=f"{base.rstrip('/')}/api/v1", headers=headers, timeout=180)
     print(f"== API {base}")
     try:
@@ -143,33 +150,54 @@ def api(base: str, s) -> None:
               params={"device_id": dev, "interval": 600}).json()
     check(len(t.get("points", [])) > 0, f"telemetry {st['station_id']}/{dev}: "
           f"{len(t.get('points', []))} buckets")
-    status = c.get("/analysis/status").json()
-    ok(f"analysis status: yesterday={status['yesterday']} schedule={status['schedule']}")
-    r = c.post("/analysis/batches", json={})
-    check(r.status_code in (200, 202), f"POST /analysis/batches -> {r.status_code}")
-    batch = r.json()["batch"]
-    import time
 
-    for _ in range(120):
-        if batch["status"] != "running":
-            break
-        time.sleep(2)
-        batch = c.get(f"/analysis/batches/{batch['batch_id']}").json()
-    check(batch["status"] in ("succeeded", "partial"),
-          f"batch {batch['batch_id']}: {batch['status']} {batch['counts']}")
-    recs = c.get("/analysis/records", params={"batch_id": batch["batch_id"]}).json()
-    check(recs["total"] > 0 or not batch["counts"].get("devices_analysable"),
-          f"records: {recs['total']} {[(x['device_id'], x['level']) for x in recs['items']]}")
-    if recs["items"]:
-        detail = c.get(f"/analysis/records/{recs['items'][0]['record_id']}").json()
-        ex = detail.get("explanation") or {}
-        check(len(detail["events"]) > 0, f"record detail: {len(detail['events'])} events, "
-              f"explanation {ex.get('method')} confidence {ex.get('confidence')}")
+    # the main server's calls
+    internal = httpx.Client(base_url=f"{base.rstrip('/')}/internal/v1", timeout=180,
+                            headers=_service_headers(s))
+    from datetime import timedelta
+
+    end = datetime.now(UTC)
+    wm = h["checks"].get("mqtt_watermark", {}).get("value")
+    body = {"analysis_id": f"check-{end:%H%M%S}", "site_id": st["station_id"],
+            "analysis_type": "general",
+            "observation_window": {"start": (end - timedelta(hours=24)).isoformat(),
+                                   "end": end.isoformat()},
+            "mqtt_watermark": str(wm) if wm else None}
+    r = internal.post("/maintenance/analyses", json=body,
+                      headers={"Idempotency-Key": body["analysis_id"]})
+    if check(r.status_code == 200, f"POST /internal/v1/maintenance/analyses -> {r.status_code}"
+             f" {r.text[:200] if r.status_code != 200 else ''}"):
+        res = r.json()
+        ok(f"{st['station_id']}: {res['health_level']} ({res['explanation_source']}) "
+           f"findings={[f['rule_id'] for f in res['findings']]} "
+           f"actions={[a['action_code'] for a in res['actions']]}")
+        again = internal.post("/maintenance/analyses", json=body,
+                              headers={"Idempotency-Key": body["analysis_id"]}).json()
+        check(again["generated_at"] == res["generated_at"], "idempotent repeat")
+    wo = {"event_id": f"check-{end:%H%M%S}", "site_id": st["station_id"],
+          "equipment_id": dev, "risk_type": "detector", "health_level": "watch",
+          "status": "pending", "triggered_at": end.isoformat(), "updated_at": end.isoformat()}
+    r = internal.put(f"/maintenance/work-orders/{wo['event_id']}", json=wo)
+    check(r.status_code == 200 and internal.get(
+        f"/maintenance/work-orders/{wo['event_id']}").status_code == 200,
+        f"work-order copy: PUT -> {r.json() if r.status_code == 200 else r.status_code}")
 
     if h["checks"]["llm"]["status"] != "configured":
         skip("chat (LLM_PROVIDER=none)")
         return
-    r = c.post("/chat", json={"message": "昨天的分析结果中哪些设备需要检修？",
+    for workflow, question in (("system_info", "请汇总全网站点运行状态"),
+                               ("maintenance_advice", "逐站分析设备健康，给出维修建议与优先级"),
+                               ("monitoring_report", "生成全部站点昨天的剂量率日报表")):
+        r = c.post("/chat", json={"message": question, "stream": False})
+        if check(r.status_code == 200 and r.json().get("workflow") == workflow,
+                 f"workflow {workflow} -> {r.status_code} {r.json().get('workflow')}"):
+            print(f"         answer: {r.json()['message']['content'][:160]!r}")
+            for res in r.json().get("results", []):
+                if res.get("type") == "report":
+                    d = c.get(res["download_url"].removeprefix("/api/v1"))
+                    check(d.status_code == 200 and d.content[:2] == b"PK",
+                          f"report download {res['file_name']} ({len(d.content)} bytes)")
+    r = c.post("/chat", json={"message": "AS01 现在的剂量率和设备状态如何？",
                               "stream": False})
     if check(r.status_code == 200, f"chat (data question) -> {r.status_code}"):
         m = r.json()["message"]

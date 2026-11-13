@@ -1,15 +1,19 @@
 """Chat turns: load history, run the graph with streaming, persist the result.
 
-Events yielded by `stream()` (sent to clients as SSE):
+Events yielded by `stream()` (sent to clients as SSE; every payload carries a monotonically
+increasing `seq`):
     session   {session_id, user_message_id}
-    tool      {name, args}                 the agent called a tool
-    delta     {text}                       answer text as it is generated
-    citation  {ref, kind, title, ...}      a source the answer cites
-    done      {message: <stored assistant message>}
+    stage     {stage, label, workflow?}     progress: intent / data / knowledge / generating
+    tool      {name, args}                  the general agent called a tool
+    result    {type, ...}                   structured result of a workflow (e.g. report download)
+    delta     {text}                        answer text as it is generated
+    citation  {ref, kind, title, ...}       a source the answer cites
+    done      {message: <stored assistant message>, workflow}
     error     {code, message}
 """
 
 import asyncio
+import contextlib
 import logging
 import re
 import time
@@ -18,9 +22,12 @@ from collections.abc import AsyncIterator
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langgraph.graph.state import CompiledStateGraph
 
+from app.agent.reports import ReportStore
 from app.agent.tools import TurnContext
-from app.analysis.batch import AnalysisService
+from app.config import Settings
 from app.db.chat_store import ChatStore, Message, NewMessage, Session
+from app.db.work_orders import WorkOrderStore
+from app.maintenance.service import MaintenanceService
 from app.rag.retriever import Retriever
 from app.stations.service import StationService
 
@@ -37,14 +44,18 @@ class ChatError(Exception):
 
 class ChatService:
     def __init__(self, store: ChatStore, graph: CompiledStateGraph | None,
-                 stations: StationService, analysis: AnalysisService,
+                 stations: StationService, maintenance: MaintenanceService,
+                 work_orders: WorkOrderStore, reports: ReportStore, settings: Settings,
                  retriever: Retriever | None, *, model: str | None,
                  history_messages: int = 20, max_input_chars: int = 4000,
                  max_tool_rounds: int = 4) -> None:
         self.store = store
         self.graph = graph
         self.stations = stations
-        self.analysis = analysis
+        self.maintenance = maintenance
+        self.work_orders = work_orders
+        self.reports = reports
+        self.settings = settings
         self.retriever = retriever
         self.model = model
         self._history = history_messages
@@ -71,41 +82,63 @@ class ChatService:
         return session, history, user_msg
 
     async def stream(self, user_id: str, session: Session, history: list[Message],
-                     user_msg: Message) -> AsyncIterator[tuple[str, dict]]:
+                     user_msg: Message, workflow: str | None = None
+                     ) -> AsyncIterator[tuple[str, dict]]:
         assert self.graph is not None
-        ctx = TurnContext(stations=self.stations, analysis=self.analysis,
-                          retriever=self.retriever, user_id=user_id)
+        ctx = TurnContext(stations=self.stations, maintenance=self.maintenance,
+                          work_orders=self.work_orders, reports=self.reports,
+                          settings=self.settings, retriever=self.retriever, user_id=user_id,
+                          session_id=session.session_id)
         inputs = {"messages": [*[HumanMessage(m.content) if m.role == "user"
                                  else AIMessage(m.content)
                                  for m in history if m.status == "complete" and m.content],
                                HumanMessage(user_msg.content)]}
-        config = {"configurable": {"ctx": ctx}, "recursion_limit": self._recursion}
+        config = {"configurable": {"ctx": ctx, "workflow": workflow},
+                  "recursion_limit": self._recursion}
         streamed, final, tool_calls, error = [], None, [], None
         usage = {"input_tokens": 0, "output_tokens": 0}
         t0 = time.perf_counter()
-        yield "session", {"session_id": session.session_id, "user_message_id": user_msg.message_id}
+        seq = 0
+
+        def event(name: str, data: dict) -> tuple[str, dict]:
+            nonlocal seq
+            seq += 1
+            return name, {**data, "seq": seq}
+
+        yield event("session", {"session_id": session.session_id,
+                                "user_message_id": user_msg.message_id})
         try:
-            async for mode, chunk in self.graph.astream(inputs, config,
-                                                        stream_mode=["messages", "updates"]):
-                if mode == "messages":
+            async for mode, chunk in self.graph.astream(
+                    inputs, config, stream_mode=["messages", "updates", "custom"]):
+                if mode == "custom":
+                    name = chunk.pop("event", "stage")
+                    yield event(name, chunk)
+                elif mode == "messages":
                     msg, meta = chunk
-                    if meta.get("langgraph_node") == "agent" and isinstance(msg, AIMessageChunk) \
-                            and isinstance(msg.content, str) and msg.content:
+                    if meta.get("langgraph_node") in ("agent", "narrate") and \
+                            isinstance(msg, AIMessageChunk) and isinstance(msg.content, str) \
+                            and msg.content:
                         streamed.append(msg.content)
-                        yield "delta", {"text": msg.content}
-                elif "agent" in chunk:
-                    ai: AIMessage = chunk["agent"]["messages"][-1]
-                    for k in usage:
-                        usage[k] += (ai.usage_metadata or {}).get(k, 0)
-                    for call in ai.tool_calls:
-                        tool_calls.append({"name": call["name"], "args": call["args"]})
-                        yield "tool", {"name": call["name"], "args": call["args"]}
-                    if not ai.tool_calls:
-                        final = ai
+                        yield event("delta", {"text": msg.content})
+                else:
+                    for node in ("agent", "narrate"):
+                        if node not in chunk:
+                            continue
+                        ai: AIMessage = chunk[node]["messages"][-1]
+                        for k in usage:
+                            usage[k] += (ai.usage_metadata or {}).get(k, 0)
+                        for call in ai.tool_calls:
+                            tool_calls.append({"name": call["name"], "args": call["args"]})
+                            yield event("tool", {"name": call["name"], "args": call["args"]})
+                        if not ai.tool_calls:
+                            final = ai
         except Exception as exc:
-            logger.exception("agent turn failed")
+            logger.exception("assistant turn failed")
             error = f"{type(exc).__name__}: {exc}"[:250]
 
+        if ctx.workflow and ctx.workflow != "general":
+            with contextlib.suppress(Exception):
+                await self.store.set_workflow(user_id, session.session_id, ctx.workflow)
         text = _THINK.sub("", final.content if final and isinstance(final.content, str)
                           else "".join(streamed)).strip()
         refs = {int(r) for r in _REF.findall(text)}
@@ -119,20 +152,25 @@ class ChatService:
             latency_ms=round((time.perf_counter() - t0) * 1000),
             error=error or (None if text else "empty answer"))))
         if status == "error":
-            yield "error", {"code": "agent_failed", "message": error or "empty answer",
-                            "message_id": stored.message_id}
+            yield event("error", {"code": "agent_failed", "message": error or "empty answer",
+                                  "message_id": stored.message_id})
             return
         for c in citations:
-            yield "citation", c.model_dump(exclude_none=True)
-        yield "done", {"message": stored.model_dump(mode="json")}
+            yield event("citation", c.model_dump(exclude_none=True))
+        yield event("done", {"message": stored.model_dump(mode="json"),
+                             "workflow": ctx.workflow})
 
-    async def ask(self, user_id: str, question: str, session_id: str | None) -> dict:
-        """Non-streaming variant: returns the stored assistant message."""
+    async def ask(self, user_id: str, question: str, session_id: str | None,
+                  workflow: str | None = None) -> dict:
+        """Non-streaming variant: returns the stored assistant message (+ workflow results)."""
         session, history, user_msg = await self.start(user_id, question, session_id)
-        result: dict = {"session_id": session.session_id}
-        async for event, data in self.stream(user_id, session, history, user_msg):
+        result: dict = {"session_id": session.session_id, "results": []}
+        async for event, data in self.stream(user_id, session, history, user_msg, workflow):
             if event == "done":
                 result["message"] = data["message"]
+                result["workflow"] = data["workflow"]
+            elif event == "result":
+                result["results"].append(data)
             elif event == "error":
                 raise ChatError(data["code"], data["message"], 502)
         return result

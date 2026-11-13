@@ -26,8 +26,8 @@ async def _station(r: Resources, station_id: str):
 @router.get("/stations")
 async def list_stations(include_disabled: bool = False, r: Resources = Depends(get_resources)):
     """Station configuration (thresholds, calibration factor, device directory)."""
-    return [s.model_dump() | {"dose_configured": s.dose_configured,
-                              "battery_configured": s.battery_configured}
+    return [s.model_dump(mode="json") | {"dose_configured": s.dose_configured,
+                                         "battery_configured": s.battery_configured}
             for s in await r.stations.all(include_disabled=include_disabled)]
 
 
@@ -35,7 +35,7 @@ async def list_stations(include_disabled: bool = False, r: Resources = Depends(g
 async def get_station(station_id: str, latest: bool = Query(True, description="latest values"),
                       r: Resources = Depends(get_resources)):
     s = await _station(r, station_id)
-    out = s.model_dump() | {"dose_configured": s.dose_configured,
+    out = s.model_dump(mode="json") | {"dose_configured": s.dose_configured,
                             "battery_configured": s.battery_configured}
     if latest:
         try:
@@ -48,7 +48,9 @@ async def get_station(station_id: str, latest: bool = Query(True, description="l
 @router.get("/stations/{station_id}/telemetry")
 async def telemetry(station_id: str,
                     metric: Metric = Query(Metric.DOSE_RATE),
-                    device_id: str | None = Query(None, description="omit for station metrics"),
+                    device_id: str | None = Query(
+                        None, description="detector id for detector metrics; battery / "
+                                          "environment metrics use the station's unit"),
                     start: datetime | None = Query(None, description="default: end - 24 h"),
                     end: datetime | None = Query(None, description="default: now"),
                     interval: int | None = Query(None, ge=1, le=86400,
@@ -66,7 +68,7 @@ async def telemetry(station_id: str,
     try:
         return await r.station_data.telemetry(s, device_id, metric, start, end, interval)
     except StationNotFound:
-        raise HTTPException(404, f"device {device_id} not found") from None
+        raise HTTPException(404, f"detector {device_id} not found at {station_id}") from None
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
     except TimeSeriesError as exc:

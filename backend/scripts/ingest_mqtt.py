@@ -2,6 +2,7 @@
 """MQTT -> IoTDB ingestion (production path). Runs until Ctrl+C / SIGTERM.
 
   python scripts/ingest_mqtt.py                                   # settings from .env
+                                    # (default: telemetry_v1 on maintenance/v1/#)
   python scripts/ingest_mqtt.py --dry-run                         # print, store nothing
   python scripts/ingest_mqtt.py --host 10.0.0.5 --topics "plant/#" --parser mapping \
       --mapping my_mapping.json --dry-run                         # inspect the real feed
@@ -26,7 +27,6 @@ from app.ingestion.pipeline import (
     run,
     run_until_stopped,
 )
-from app.stations.model import STATION_NODE
 from app.stations.store import load_file
 from app.timeseries.iotdb import IoTDB
 
@@ -48,8 +48,8 @@ def main() -> None:
                          ingest_parser=args.parser, ingest_mapping_file=args.mapping)
     known = None
     if not args.accept_unknown_devices and s.ingest_reject_unknown_devices:
-        known = {(st.station_id, node) for st in load_file(s.stations_file)
-                 for node in [STATION_NODE, *(d.device_id for d in st.devices)]}
+        known = {(st.station_id, eq) for st in load_file(s.stations_file)
+                 for eq in st.equipment_ids()}
     if args.file:
         source = FileSource(args.file)
     else:
@@ -72,7 +72,8 @@ def main() -> None:
             await db.close()
 
     run(go())
-    print("stats: " + json.dumps(pipeline.stats.as_dict(), ensure_ascii=False), file=sys.stderr)
+    print("stats: " + json.dumps(pipeline.stats.as_dict(), ensure_ascii=False)
+          + f" watermark={pipeline.watermark}", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -3,3 +3,6 @@
 # examples) and .env.example in git, so they are re-included here.
 !data/
 !.env.example
+
+# generated at runtime (assistant reports)
+var/

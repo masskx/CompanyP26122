@@ -2,7 +2,8 @@
 """Initialise / update the Milvus knowledge base with GLM embeddings (offline).
 
   python scripts/build_knowledge.py                       # build data/knowledge, activate it
-  python scripts/build_knowledge.py --corpus /path/docs   # your documents (manifest optional)
+  python scripts/build_knowledge.py --corpus /path/docs   # your documents (manifest optional;
+                                                          # .md .txt .pdf .docx)
   python scripts/build_knowledge.py --dry-run             # show chunks, no embedding/Milvus
   python scripts/build_knowledge.py list                  # versions and the active one
   python scripts/build_knowledge.py activate <version>    # switch / roll back
@@ -31,12 +32,14 @@ def main() -> None:
     p.add_argument("command", nargs="?", default="build",
                    choices=["build", "list", "activate", "drop", "search"])
     p.add_argument("arg", nargs="?", help="version (activate/drop) or query (search)")
-    p.add_argument("--corpus", type=Path, default=_common.BACKEND / "data" / "knowledge")
+    p.add_argument("--corpus", type=Path, help="corpus directory (default KB_CORPUS_PATH, "
+                   "data/knowledge)")
     p.add_argument("--version", help="override the version name")
     p.add_argument("--no-activate", action="store_true")
     p.add_argument("--dry-run", action="store_true", help="only parse and chunk")
     args = p.parse_args()
     s = _common.settings(args)
+    args.corpus = args.corpus or s.kb_corpus_path
 
     if args.command == "build" and args.dry_run:
         manifest = load_manifest(args.corpus)

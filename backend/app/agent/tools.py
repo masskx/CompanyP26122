@@ -10,29 +10,42 @@ import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
+from app.config import Settings
 from app.db.chat_store import Citation
+from app.db.work_orders import WorkOrderStore
 from app.rag.retriever import Retriever
 from app.rag.store import KnowledgeUnavailable
-from app.stations.model import Metric
+from app.stations.model import METRICS_BY_TYPE, EquipmentType, Metric
 from app.stations.service import StationNotFound, StationService
 from app.timeseries.iotdb import TimeSeriesError
 
 if TYPE_CHECKING:
-    from app.analysis.batch import AnalysisService
+    from app.agent.reports import ReportStore
+    from app.maintenance.service import MaintenanceService
 
 
 @dataclass
 class TurnContext:
     stations: StationService
-    analysis: "AnalysisService"
+    maintenance: "MaintenanceService"
+    work_orders: WorkOrderStore
+    reports: "ReportStore"
+    settings: Settings
     retriever: Retriever | None = None
     user_id: str = "anonymous"
+    session_id: str | None = None
+    workflow: str | None = None
     kb_version: str | None = None
     sources: list[Citation] = field(default_factory=list)
+
+    @property
+    def tz(self) -> ZoneInfo:
+        return ZoneInfo(self.settings.analysis_timezone)
 
     def cite(self, citation: dict, body: str) -> str:
         c = Citation(ref=len(self.sources) + 1, **citation)
@@ -78,124 +91,121 @@ async def search_knowledge(query: str, config: RunnableConfig, top_k: int = 5) -
 
 @tool
 async def list_stations(config: RunnableConfig) -> str:
-    """列出固定监测站及其配置（编号、名称、采样周期、校准系数、剂量率一级/二级阈值、
-    蓄电池预警/报警电压、设备清单）。"""
+    """列出固定监测站目录（编号、名称、类型、通信方式、采样周期、校准系数、本底值、剂量率一级/二级阈值、
+    蓄电池预警/报警电压、探测器及校准有效期）。"""
     ctx = _ctx(config)
-    rows = [s.model_dump() | {"dose_configured": s.dose_configured,
-                              "battery_configured": s.battery_configured}
+    rows = [s.model_dump() | {"dose_configured": s.dose_configured}
             for s in await ctx.stations.stations.all()]
     if not rows:
         return "没有配置任何监测站。"
-    return ctx.cite({"kind": "data", "title": "监测站配置", "source": "openGauss station_config"},
+    return ctx.cite({"kind": "data", "title": "监测站目录", "source": "站点目录快照"},
                     _json(rows))
 
 
 @tool(parse_docstring=True)
 async def get_station_status(station_id: str, config: RunnableConfig) -> str:
-    """监测站的最新数据：每台设备的剂量率（µGy/h，未乘校准系数）、设备状态、通信状态，
-    以及站级蓄电池电压/电量、市电、充电、方舱温湿度、门禁、雨量。
+    """监测站最新数据：探测器 γ 瞬时值/平均值/标准差（µGy/h，未乘校准系数）、设备状态、通信状态，
+    备电电压/电量/市电/充电/参考续航，方舱温湿度、门禁、雨量。
 
     Args:
-        station_id: 监测站编号，例如 ST01。
+        station_id: 监测站编号，例如 AS01。
     """
     ctx = _ctx(config)
     try:
-        station = await ctx.stations.station(station_id)
+        station = await ctx.stations.station(station_id.upper())
         latest = await ctx.stations.latest(station)
     except StationNotFound:
         return f"监测站 {station_id} 不存在。可先调用 list_stations 查看编号。"
     except TimeSeriesError as exc:
         return f"时序数据库不可用：{exc}"
-    return ctx.cite({"kind": "data", "title": f"{station.name} 最新数据", "source": "IoTDB",
-                     "device_id": station_id}, _json(latest))
+    return ctx.cite({"kind": "data", "title": f"{station.station_id} {station.name} 最新数据",
+                     "source": "IoTDB", "device_id": station.station_id}, _json(latest))
 
 
 @tool(parse_docstring=True)
-async def get_telemetry(station_id: str, config: RunnableConfig, device_id: str | None = None,
-                        metric: str = "dose_rate", hours: float = 6,
-                        interval_minutes: int = 10) -> str:
+async def get_telemetry(station_id: str, config: RunnableConfig, metric: str = "dose_rate",
+                        device_id: str | None = None, hours: float = 24,
+                        interval_minutes: int = 60) -> str:
     """某指标的分时段聚合曲线（每段平均/最小/最大值与样本数），用于趋势分析。
 
     Args:
         station_id: 监测站编号。
-        device_id: 设备编号（设备指标 dose_rate/status/comm 必填；站级指标留空）。
-        metric: dose_rate（µGy/h）、status、comm、battery_voltage、battery_level、ac_power、
-            charging、shelter_temp、shelter_humidity、door、rainfall。
-        hours: 回溯小时数，默认 6，最多 168。
-        interval_minutes: 聚合间隔分钟数，默认 10；总段数不超过 96。
+        metric: dose_rate、dose_rate_avg、dose_rate_std、status、comm（探测器指标，需 device_id，
+            省略时取该站第一台探测器）；battery_voltage、battery_level、ac_power、charging、
+            runtime_hours、shelter_temp、shelter_humidity、door、rainfall（站级指标）。
+        device_id: 探测器编号，例如 AS01-DET-01。
+        hours: 回溯小时数，默认 24，最多 744。
+        interval_minutes: 聚合间隔分钟数，默认 60；总段数不超过 96。
     """
     ctx = _ctx(config)
-    hours = max(0.5, min(hours, 168))
+    hours = max(0.5, min(hours, 744))
     interval = max(interval_minutes, int(hours * 60 / 96) + 1, 1)
-    start, end = datetime.now(UTC) - timedelta(hours=hours), datetime.now(UTC)
+    end = datetime.now(UTC)
+    start = end - timedelta(hours=hours)
     try:
-        station = await ctx.stations.station(station_id)
-        data = await ctx.stations.telemetry(station, device_id, Metric(metric), start, end,
-                                            interval * 60)
+        station = await ctx.stations.station(station_id.upper())
+        m = Metric(metric)
+        if m in METRICS_BY_TYPE[EquipmentType.DETECTOR] and device_id is None and station.devices:
+            device_id = station.devices[0].device_id
+        data = await ctx.stations.telemetry(station, device_id, m, start, end, interval * 60)
     except StationNotFound:
         return f"监测站或设备不存在：{station_id}/{device_id}。"
     except ValueError as exc:
         return f"参数错误：{exc}"
     except TimeSeriesError as exc:
         return f"时序数据库不可用：{exc}"
-    return ctx.cite({"kind": "data", "title": f"{station.name} {device_id or '站级'} {metric} "
-                     f"曲线（{interval} 分钟）", "source": "IoTDB",
-                     "device_id": f"{station_id}/{device_id or '-'}",
+    return ctx.cite({"kind": "data", "title": f"{station.station_id} {data['equipment_id']} "
+                     f"{metric} 曲线（{interval} 分钟）", "source": "IoTDB",
+                     "device_id": data["equipment_id"],
                      "time_range": f"{start.isoformat()}/{end.isoformat()}"}, _json(data))
 
 
 @tool(parse_docstring=True)
-async def get_analysis_results(config: RunnableConfig, station_id: str | None = None,
-                               date: str | None = None) -> str:
-    """每日分析结果（规则判定的异常记录：每台异常设备 / 站级蓄电池一条，含等级、事件数、
-    标题和分析摘要）。默认最近一次分析（通常为昨天）。用于“哪些设备有问题/需要检修”类问题。
+async def run_maintenance_check(station_id: str, config: RunnableConfig, hours: float = 24,
+                                analysis_type: str = "general") -> str:
+    """用维护规则引擎分析一个站点最近一段时间的探测器和备电（与主服务器定时调用的分析相同的规则）：
+    健康等级（watch 需关注 / inspect 建议检修 / insufficient_data 数据不足 / normal 未命中规则）、
+    关键依据、建议动作和数据限制。
 
     Args:
-        station_id: 监测站编号（可选）。
-        date: 分析日期 YYYY-MM-DD（可选）。
+        station_id: 监测站编号。
+        hours: 回溯小时数，默认 24，最多 168。
+        analysis_type: detector、backup_power 或 general（默认，两者都分析）。
     """
     ctx = _ctx(config)
+    end = datetime.now(UTC)
+    start = end - timedelta(hours=max(1, min(hours, 168)))
     try:
-        day = datetime.strptime(date, "%Y-%m-%d").date() if date else None
-    except ValueError:
-        return "date 格式应为 YYYY-MM-DD。"
-    store = ctx.analysis.store
-    batch = await store.current_batch(ctx.analysis.version, day)
-    if batch is None:
-        return "没有可用的分析结果" + (f"（{date}）" if date else "") + "。"
-    records, total = await store.list_records(batch.batch_id, {"station_id": station_id}, 50, 0)
-    rows = [{"record_id": r.record_id, "station": r.station_id, "device": r.device_id,
-             "device_name": r.device_name, "level": r.level.value, "title": r.title,
-             "event_count": r.event_count, "data_status": r.data_status,
-             "summary": r.explanation.summary if r.explanation else None} for r in records]
-    body = {"analysis_date": batch.analysis_date.isoformat(), "batch_status": batch.status,
-            "config_gaps": batch.config_gaps, "records_total": total, "records": rows}
-    return ctx.cite({"kind": "data", "title": f"{batch.analysis_date} 分析结果",
-                     "source": "openGauss analysis_record",
-                     "time_range": f"{batch.window_start.isoformat()}/"
-                                   f"{batch.window_end.isoformat()}"}, _json(body))
+        res = await ctx.maintenance.assess(station_id.upper(), start, end, analysis_type)
+    except Exception as exc:
+        return f"分析失败：{getattr(exc, 'message', exc)}"
+    return ctx.cite({"kind": "data", "title": f"{station_id.upper()} 维护规则分析",
+                     "source": "维护规则引擎", "device_id": station_id.upper(),
+                     "time_range": f"{start.isoformat()}/{end.isoformat()}"},
+                    res.model_dump_json(exclude={"versions"}))
 
 
 @tool(parse_docstring=True)
-async def get_analysis_record(record_id: str, config: RunnableConfig) -> str:
-    """一条分析记录的详情：各异常事件的起止时间、统计值、触发规则与阈值、同比/环比、
-    上下文（市电、降雨、方舱环境）和分析说明（不含原始曲线）。
+async def get_work_orders(config: RunnableConfig, station_id: str | None = None,
+                          days: int = 30) -> str:
+    """主服务器推送过来的维护工单副本（风险类型、健康等级、触发时间、已发布 AI 结果、人工审核结论）。
 
     Args:
-        record_id: 记录编号（来自 get_analysis_results）。
+        station_id: 监测站编号（可选）。
+        days: 回溯天数，默认 30，最多 365。
     """
     ctx = _ctx(config)
-    record = await ctx.analysis.store.get_record(record_id)
-    if record is None:
-        return f"记录 {record_id} 不存在。"
-    for e in record.events or []:
-        e.values = None
-    return ctx.cite({"kind": "data", "title": f"{record.station_id}/{record.device_id} "
-                     f"{record.analysis_date} 分析记录", "source": "openGauss analysis_event",
-                     "device_id": f"{record.station_id}/{record.device_id}"},
-                    record.model_dump_json())
+    end = datetime.now(UTC)
+    items = await ctx.work_orders.list(station_id.upper() if station_id else None, None,
+                                       end - timedelta(days=max(1, min(days, 365))), end, 50)
+    if not items:
+        return "该时间范围内没有工单记录。"
+    return ctx.cite({"kind": "data", "title": f"维护工单（近 {days} 天）", "source": "工单副本",
+                     "device_id": station_id}, _json([i.model_dump(mode="json",
+                                                                   exclude={"received_at"})
+                                                      for i in items]))
 
 
-DATA_TOOLS = [list_stations, get_station_status, get_telemetry, get_analysis_results,
-              get_analysis_record]
+DATA_TOOLS = [list_stations, get_station_status, get_telemetry, run_maintenance_check,
+              get_work_orders]
 ALL_TOOLS = [search_knowledge, *DATA_TOOLS]

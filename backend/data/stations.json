@@ -1,319 +1,963 @@
 {
-  "_comment": "SIMULATION ONLY. Stations, thresholds, voltages and simulation profiles are synthetic (not plant data, not alarm set-points). Replace with the real station configuration table; leave dose_l1/dose_l2 or battery_warn_v/battery_alarm_v null until the plant provides them (the analysis then records a configuration gap instead of guessing). 'simulation' blocks are read only by the simulator and never stored in openGauss. Expected analysis of yesterday with the simulator: see backend/docs/station-analysis.md (Demo scenario).",
-  "stations": [
+ "_comment": "Station directory snapshot (codes and names from docs/原型/打开工作站.html; the mobile monitoring vehicle M01 is not a fixed station). Thresholds, voltages, runtimes and every 'simulation' block are SYNTHETIC: replace with the main server's real configuration. Leave dose_l1/dose_l2 or battery_warn_v/battery_alarm_v out when not provided: the analysis then reports a configuration gap instead of guessing (AS13 shows this). Scripted events use ago_hours relative to the simulator start, so the last 24 h always contain the demo scenario.",
+ "stations": [
+  {
+   "station_id": "AS01",
+   "name": "三废区",
+   "station_type": "厂区固定站",
+   "comm_type": "fiber",
+   "comm_id": "COM-AS01",
+   "sampling_interval_s": 60,
+   "calibration_factor": 1.0,
+   "background_dose": 0.09,
+   "dose_l1": 0.25,
+   "dose_l2": 0.4,
+   "battery_warn_v": 11.6,
+   "battery_alarm_v": 11.2,
+   "battery_drop_v": 0.3,
+   "battery_drop_minutes": 60,
+   "battery_charge_minutes": 120,
+   "battery_runtime_hours": 24,
+   "has_rain_gauge": true,
+   "devices": [
     {
-      "station_id": "ST01",
-      "name": "1号固定监测站（模拟）",
-      "comm_address": "10.10.1.11:502",
-      "sampling_interval_s": 30,
-      "calibration_factor": 1.0,
-      "dose_l1": 0.25,
-      "dose_l2": 0.5,
-      "battery_warn_v": 11.8,
-      "battery_alarm_v": 11.4,
-      "battery_drop_v": 0.5,
-      "battery_drop_minutes": 60,
-      "battery_charge_minutes": 120,
-      "has_rain_gauge": true,
-      "simulation": {
-        "battery": {
-          "float_v": 13.5,
-          "rest_v": 12.8,
-          "discharge_v_per_h": 0.5,
-          "charge_minutes": 120,
-          "reports_level": true
-        },
-        "shelter": {
-          "temperature": 22.0,
-          "humidity": 45.0
-        },
-        "events": [
-          {
-            "type": "rain",
-            "day": -1,
-            "start": "01:30",
-            "minutes": 150,
-            "mm_per_hour": 2.0
-          },
-          {
-            "type": "ac_loss",
-            "day": -1,
-            "start": "16:00",
-            "minutes": 150
-          },
-          {
-            "type": "door_open",
-            "day": -1,
-            "start": "16:20",
-            "minutes": 15
-          },
-          {
-            "type": "slow_charge",
-            "day": -1,
-            "start": "18:00",
-            "minutes": 60,
-            "factor": 2.5
-          }
-        ]
-      },
-      "devices": [
-        {
-          "device_id": "D01",
-          "name": "γ剂量率探测器01",
-          "simulation": {
-            "baseline": 0.085,
-            "noise": 0.04,
-            "rain_effect": 0.015
-          }
-        },
-        {
-          "device_id": "D02",
-          "name": "γ剂量率探测器02",
-          "simulation": {
-            "baseline": 0.09,
-            "noise": 0.04,
-            "rain_effect": 0.015,
-            "events": [
-              {
-                "type": "elevation",
-                "day": -1,
-                "start": "02:00",
-                "minutes": 60,
-                "level": 0.32
-              },
-              {
-                "type": "elevation",
-                "day": -1,
-                "start": "08:00",
-                "minutes": 60,
-                "level": 0.3,
-                "report_status": false
-              }
-            ]
-          }
-        },
-        {
-          "device_id": "D03",
-          "name": "γ剂量率探测器03",
-          "simulation": {
-            "baseline": 0.08,
-            "noise": 0.04,
-            "events": [
-              {
-                "type": "elevation",
-                "day": -1,
-                "start": "10:00",
-                "minutes": 30,
-                "level": 0.35
-              },
-              {
-                "type": "elevation",
-                "day": -1,
-                "start": "10:30",
-                "minutes": 40,
-                "level": 0.65
-              }
-            ]
-          }
-        },
-        {
-          "device_id": "D04",
-          "name": "γ剂量率探测器04",
-          "simulation": {
-            "baseline": 0.095,
-            "noise": 0.04,
-            "events": [
-              {
-                "type": "stuck",
-                "day": -1,
-                "start": "13:00",
-                "minutes": 180
-              }
-            ]
-          }
-        },
-        {
-          "device_id": "D05",
-          "name": "γ剂量率探测器05",
-          "simulation": {
-            "baseline": 0.088,
-            "noise": 0.04,
-            "events": [
-              {
-                "type": "offline",
-                "day": -1,
-                "start": "04:00",
-                "minutes": 90
-              },
-              {
-                "type": "gap",
-                "day": -1,
-                "start": "20:00",
-                "minutes": 20
-              }
-            ]
-          }
-        },
-        {
-          "device_id": "D06",
-          "name": "γ剂量率探测器06",
-          "simulation": {
-            "baseline": 0.082,
-            "noise": 0.04,
-            "events": [
-              {
-                "type": "fault",
-                "day": -1,
-                "start": "15:00",
-                "minutes": 45
-              }
-            ]
-          }
-        },
-        {
-          "device_id": "D07",
-          "name": "备用通道07（未启用）",
-          "enabled": false,
-          "simulation": {
-            "baseline": 0.08,
-            "noise": 0.04
-          }
-        }
+     "device_id": "AS01-DET-01",
+     "name": "AS01 γ剂量率探测器",
+     "serial_no": "SN-AS01-0001",
+     "calibration_valid_until": "2027-06-30",
+     "simulation": {
+      "baseline": 0.09,
+      "noise": 0.03,
+      "rain_effect": 0.01,
+      "events": [
+       {
+        "type": "elevation",
+        "ago_hours": 20,
+        "minutes": 60,
+        "level": 0.3
+       },
+       {
+        "type": "elevation",
+        "ago_hours": 6,
+        "minutes": 60,
+        "level": 0.29,
+        "report_status": false
+       }
       ]
-    },
-    {
-      "station_id": "ST02",
-      "name": "2号固定监测站（模拟）",
-      "comm_address": "10.10.1.12:502",
-      "sampling_interval_s": 60,
-      "calibration_factor": 1.0,
-      "dose_l1": 0.25,
-      "dose_l2": 0.5,
-      "battery_warn_v": 11.8,
-      "battery_alarm_v": 11.4,
-      "battery_drop_v": 0.5,
-      "battery_drop_minutes": 60,
-      "battery_charge_minutes": 120,
-      "has_rain_gauge": false,
-      "simulation": {
-        "battery": {
-          "float_v": 13.5,
-          "rest_v": 12.8,
-          "discharge_v_per_h": 0.5,
-          "charge_minutes": 120,
-          "reports_level": false
-        },
-        "shelter": {
-          "temperature": 24.0,
-          "humidity": 50.0
-        },
-        "events": [
-          {
-            "type": "battery_drain",
-            "day": -1,
-            "start": "09:00",
-            "minutes": 90,
-            "v_per_h": 0.8
-          }
-        ]
-      },
-      "devices": [
-        {
-          "device_id": "D01",
-          "name": "γ剂量率探测器01",
-          "simulation": {
-            "baseline": 0.1,
-            "noise": 0.04
-          }
-        },
-        {
-          "device_id": "D02",
-          "name": "γ剂量率探测器02",
-          "simulation": {
-            "baseline": 0.11,
-            "noise": 0.04
-          }
-        },
-        {
-          "device_id": "D03",
-          "name": "γ剂量率探测器03",
-          "simulation": {
-            "baseline": 0.1,
-            "noise": 0.04,
-            "events": [
-              {
-                "type": "gap",
-                "day": -1,
-                "start": "00:00",
-                "minutes": 1440
-              }
-            ]
-          }
-        },
-        {
-          "device_id": "D04",
-          "name": "γ剂量率探测器04",
-          "simulation": {
-            "baseline": 0.105,
-            "noise": 0.04,
-            "events": [
-              {
-                "type": "comm_loss",
-                "day": -1,
-                "start": "06:00",
-                "minutes": 30
-              }
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "station_id": "ST03",
-      "name": "3号固定监测站（模拟，阈值待配置）",
-      "comm_address": "10.10.1.13:502",
-      "sampling_interval_s": 300,
-      "calibration_factor": 1.0,
-      "dose_l1": null,
-      "dose_l2": null,
-      "battery_warn_v": null,
-      "battery_alarm_v": null,
-      "has_rain_gauge": false,
-      "simulation": {
-        "battery": {
-          "reports_level": true
-        },
-        "shelter": {
-          "temperature": 20.0,
-          "humidity": 55.0
-        }
-      },
-      "devices": [
-        {
-          "device_id": "D01",
-          "name": "γ剂量率探测器01",
-          "simulation": {
-            "baseline": 0.07,
-            "noise": 0.04
-          }
-        },
-        {
-          "device_id": "D02",
-          "name": "γ剂量率探测器02",
-          "simulation": {
-            "baseline": 0.075,
-            "noise": 0.04
-          }
-        },
-        {
-          "device_id": "D03",
-          "name": "γ剂量率探测器03",
-          "simulation": {
-            "baseline": 0.072,
-            "noise": 0.04
-          }
-        }
-      ]
+     }
     }
-  ]
+   ],
+   "simulation": {
+    "battery": {
+     "float_v": 12.15,
+     "rest_v": 12.0,
+     "discharge_v_per_h": 0.12,
+     "charge_minutes": 120,
+     "runtime_hours": 24
+    },
+    "shelter": {
+     "temperature": 23.0,
+     "humidity": 52.0
+    },
+    "events": [
+     {
+      "type": "rain",
+      "ago_hours": 21,
+      "minutes": 150,
+      "mm_per_hour": 2.0
+     }
+    ]
+   }
+  },
+  {
+   "station_id": "AS02",
+   "name": "综合楼",
+   "station_type": "厂区固定站",
+   "comm_type": "fiber",
+   "comm_id": "COM-AS02",
+   "sampling_interval_s": 60,
+   "calibration_factor": 1.0,
+   "background_dose": 0.095,
+   "dose_l1": 0.25,
+   "dose_l2": 0.4,
+   "battery_warn_v": 11.6,
+   "battery_alarm_v": 11.2,
+   "battery_drop_v": 0.3,
+   "battery_drop_minutes": 60,
+   "battery_charge_minutes": 120,
+   "battery_runtime_hours": 24,
+   "has_rain_gauge": false,
+   "devices": [
+    {
+     "device_id": "AS02-DET-01",
+     "name": "AS02 γ剂量率探测器",
+     "serial_no": "SN-AS02-0001",
+     "calibration_valid_until": "2027-06-30",
+     "simulation": {
+      "baseline": 0.095,
+      "noise": 0.03,
+      "rain_effect": 0.0,
+      "events": []
+     }
+    }
+   ],
+   "simulation": {
+    "battery": {
+     "float_v": 12.15,
+     "rest_v": 12.0,
+     "discharge_v_per_h": 0.12,
+     "charge_minutes": 120,
+     "runtime_hours": 24
+    },
+    "shelter": {
+     "temperature": 23.0,
+     "humidity": 52.0
+    },
+    "events": []
+   }
+  },
+  {
+   "station_id": "AS03",
+   "name": "升压站南部",
+   "station_type": "厂区固定站",
+   "comm_type": "fiber",
+   "comm_id": "COM-AS03",
+   "sampling_interval_s": 60,
+   "calibration_factor": 1.0,
+   "background_dose": 0.09,
+   "dose_l1": 0.25,
+   "dose_l2": 0.4,
+   "battery_warn_v": 11.6,
+   "battery_alarm_v": 11.2,
+   "battery_drop_v": 0.3,
+   "battery_drop_minutes": 60,
+   "battery_charge_minutes": 120,
+   "battery_runtime_hours": 24,
+   "has_rain_gauge": false,
+   "devices": [
+    {
+     "device_id": "AS03-DET-01",
+     "name": "AS03 γ剂量率探测器",
+     "serial_no": "SN-AS03-0001",
+     "calibration_valid_until": "2027-06-30",
+     "simulation": {
+      "baseline": 0.09,
+      "noise": 0.03,
+      "rain_effect": 0.0,
+      "events": [
+       {
+        "type": "elevation",
+        "ago_hours": 14,
+        "minutes": 30,
+        "level": 0.33
+       },
+       {
+        "type": "elevation",
+        "ago_hours": 13.5,
+        "minutes": 40,
+        "level": 0.46
+       }
+      ]
+     }
+    }
+   ],
+   "simulation": {
+    "battery": {
+     "float_v": 12.15,
+     "rest_v": 12.0,
+     "discharge_v_per_h": 0.12,
+     "charge_minutes": 120,
+     "runtime_hours": 24
+    },
+    "shelter": {
+     "temperature": 23.0,
+     "humidity": 52.0
+    },
+    "events": []
+   }
+  },
+  {
+   "station_id": "BS01",
+   "name": "栗隔村",
+   "station_type": "厂外固定站",
+   "comm_type": "4g",
+   "comm_id": "COM-BS01",
+   "sampling_interval_s": 60,
+   "calibration_factor": 1.0,
+   "background_dose": 0.088,
+   "dose_l1": 0.25,
+   "dose_l2": 0.4,
+   "battery_warn_v": 11.6,
+   "battery_alarm_v": 11.2,
+   "battery_drop_v": 0.3,
+   "battery_drop_minutes": 60,
+   "battery_charge_minutes": 120,
+   "battery_runtime_hours": 24,
+   "has_rain_gauge": false,
+   "devices": [
+    {
+     "device_id": "BS01-DET-01",
+     "name": "BS01 γ剂量率探测器",
+     "serial_no": "SN-BS01-0001",
+     "calibration_valid_until": "2027-06-30",
+     "simulation": {
+      "baseline": 0.088,
+      "noise": 0.03,
+      "rain_effect": 0.0,
+      "events": []
+     }
+    }
+   ],
+   "simulation": {
+    "battery": {
+     "float_v": 12.15,
+     "rest_v": 12.0,
+     "discharge_v_per_h": 0.12,
+     "charge_minutes": 120,
+     "runtime_hours": 24
+    },
+    "shelter": {
+     "temperature": 23.0,
+     "humidity": 52.0
+    },
+    "events": []
+   }
+  },
+  {
+   "station_id": "BS02",
+   "name": "厂区西南边界",
+   "station_type": "厂外固定站",
+   "comm_type": "4g",
+   "comm_id": "COM-BS02",
+   "sampling_interval_s": 60,
+   "calibration_factor": 1.0,
+   "background_dose": 0.082,
+   "dose_l1": 0.25,
+   "dose_l2": 0.4,
+   "battery_warn_v": 11.6,
+   "battery_alarm_v": 11.2,
+   "battery_drop_v": 0.3,
+   "battery_drop_minutes": 60,
+   "battery_charge_minutes": 120,
+   "battery_runtime_hours": 24,
+   "has_rain_gauge": false,
+   "devices": [
+    {
+     "device_id": "BS02-DET-01",
+     "name": "BS02 γ剂量率探测器",
+     "serial_no": "SN-BS02-0001",
+     "calibration_valid_until": "2027-06-30",
+     "simulation": {
+      "baseline": 0.082,
+      "noise": 0.03,
+      "rain_effect": 0.0,
+      "events": [
+       {
+        "type": "offline",
+        "ago_hours": 3,
+        "minutes": 240
+       }
+      ]
+     }
+    }
+   ],
+   "simulation": {
+    "battery": {
+     "float_v": 12.15,
+     "rest_v": 12.0,
+     "discharge_v_per_h": 0.12,
+     "charge_minutes": 120,
+     "runtime_hours": 24
+    },
+    "shelter": {
+     "temperature": 23.0,
+     "humidity": 52.0
+    },
+    "events": []
+   }
+  },
+  {
+   "station_id": "BS03",
+   "name": "南港头村",
+   "station_type": "厂外固定站",
+   "comm_type": "4g",
+   "comm_id": "COM-BS03",
+   "sampling_interval_s": 60,
+   "calibration_factor": 1.0,
+   "background_dose": 0.086,
+   "dose_l1": 0.25,
+   "dose_l2": 0.4,
+   "battery_warn_v": 11.6,
+   "battery_alarm_v": 11.2,
+   "battery_drop_v": 0.3,
+   "battery_drop_minutes": 60,
+   "battery_charge_minutes": 120,
+   "battery_runtime_hours": 24,
+   "has_rain_gauge": false,
+   "devices": [
+    {
+     "device_id": "BS03-DET-01",
+     "name": "BS03 γ剂量率探测器",
+     "serial_no": "SN-BS03-0001",
+     "calibration_valid_until": "2027-06-30",
+     "simulation": {
+      "baseline": 0.086,
+      "noise": 0.03,
+      "rain_effect": 0.0,
+      "events": []
+     }
+    }
+   ],
+   "simulation": {
+    "battery": {
+     "float_v": 12.15,
+     "rest_v": 12.0,
+     "discharge_v_per_h": 0.12,
+     "charge_minutes": 120,
+     "runtime_hours": 24
+    },
+    "shelter": {
+     "temperature": 23.0,
+     "humidity": 52.0
+    },
+    "events": []
+   }
+  },
+  {
+   "station_id": "AS11",
+   "name": "高温堆东北角",
+   "station_type": "厂区固定站",
+   "comm_type": "fiber",
+   "comm_id": "COM-AS11",
+   "sampling_interval_s": 60,
+   "calibration_factor": 1.0,
+   "background_dose": 0.1,
+   "dose_l1": 0.25,
+   "dose_l2": 0.4,
+   "battery_warn_v": 11.6,
+   "battery_alarm_v": 11.2,
+   "battery_drop_v": 0.3,
+   "battery_drop_minutes": 60,
+   "battery_charge_minutes": 120,
+   "battery_runtime_hours": 24,
+   "has_rain_gauge": false,
+   "devices": [
+    {
+     "device_id": "AS11-DET-01",
+     "name": "AS11 γ剂量率探测器",
+     "serial_no": "SN-AS11-0001",
+     "calibration_valid_until": "2026-08-31",
+     "simulation": {
+      "baseline": 0.1,
+      "noise": 0.03,
+      "rain_effect": 0.0,
+      "events": []
+     }
+    }
+   ],
+   "simulation": {
+    "battery": {
+     "float_v": 12.15,
+     "rest_v": 12.0,
+     "discharge_v_per_h": 0.12,
+     "charge_minutes": 120,
+     "runtime_hours": 24
+    },
+    "shelter": {
+     "temperature": 23.0,
+     "humidity": 52.0
+    },
+    "events": []
+   }
+  },
+  {
+   "station_id": "AS12",
+   "name": "高温堆西南角",
+   "station_type": "厂区固定站",
+   "comm_type": "fiber",
+   "comm_id": "COM-AS12",
+   "sampling_interval_s": 60,
+   "calibration_factor": 1.0,
+   "background_dose": 0.085,
+   "dose_l1": 0.25,
+   "dose_l2": 0.4,
+   "battery_warn_v": 11.6,
+   "battery_alarm_v": 11.2,
+   "battery_drop_v": 0.3,
+   "battery_drop_minutes": 60,
+   "battery_charge_minutes": 120,
+   "battery_runtime_hours": 24,
+   "has_rain_gauge": true,
+   "devices": [
+    {
+     "device_id": "AS12-DET-01",
+     "name": "AS12 γ剂量率探测器",
+     "serial_no": "SN-AS12-0001",
+     "calibration_valid_until": "2027-06-30",
+     "simulation": {
+      "baseline": 0.085,
+      "noise": 0.03,
+      "rain_effect": 0.012,
+      "events": []
+     }
+    }
+   ],
+   "simulation": {
+    "battery": {
+     "float_v": 12.15,
+     "rest_v": 12.0,
+     "discharge_v_per_h": 0.12,
+     "charge_minutes": 120,
+     "runtime_hours": 24
+    },
+    "shelter": {
+     "temperature": 23.0,
+     "humidity": 52.0
+    },
+    "events": [
+     {
+      "type": "rain",
+      "ago_hours": 10,
+      "minutes": 120,
+      "mm_per_hour": 3.0
+     }
+    ]
+   }
+  },
+  {
+   "station_id": "AS13",
+   "name": "高温堆厂前区",
+   "station_type": "厂区固定站",
+   "comm_type": "fiber",
+   "comm_id": "COM-AS13",
+   "sampling_interval_s": 60,
+   "calibration_factor": 1.0,
+   "background_dose": 0.074,
+   "battery_warn_v": 11.6,
+   "battery_alarm_v": 11.2,
+   "battery_drop_v": 0.3,
+   "battery_drop_minutes": 60,
+   "battery_charge_minutes": 120,
+   "battery_runtime_hours": 24,
+   "has_rain_gauge": false,
+   "devices": [
+    {
+     "device_id": "AS13-DET-01",
+     "name": "AS13 γ剂量率探测器",
+     "serial_no": "SN-AS13-0001",
+     "calibration_valid_until": "2027-06-30",
+     "simulation": {
+      "baseline": 0.074,
+      "noise": 0.03,
+      "rain_effect": 0.0,
+      "events": []
+     }
+    }
+   ],
+   "simulation": {
+    "battery": {
+     "float_v": 12.15,
+     "rest_v": 12.0,
+     "discharge_v_per_h": 0.12,
+     "charge_minutes": 120,
+     "runtime_hours": 24
+    },
+    "shelter": {
+     "temperature": 23.0,
+     "humidity": 52.0
+    },
+    "events": []
+   }
+  },
+  {
+   "station_id": "BS11",
+   "name": "东钱家村",
+   "station_type": "厂外固定站",
+   "comm_type": "4g",
+   "comm_id": "COM-BS11",
+   "sampling_interval_s": 60,
+   "calibration_factor": 1.0,
+   "background_dose": 0.078,
+   "dose_l1": 0.25,
+   "dose_l2": 0.4,
+   "battery_warn_v": 11.6,
+   "battery_alarm_v": 11.2,
+   "battery_drop_v": 0.3,
+   "battery_drop_minutes": 60,
+   "battery_charge_minutes": 120,
+   "battery_runtime_hours": 24,
+   "has_rain_gauge": false,
+   "devices": [
+    {
+     "device_id": "BS11-DET-01",
+     "name": "BS11 γ剂量率探测器",
+     "serial_no": "SN-BS11-0001",
+     "calibration_valid_until": "2027-06-30",
+     "simulation": {
+      "baseline": 0.078,
+      "noise": 0.03,
+      "rain_effect": 0.0,
+      "events": []
+     }
+    }
+   ],
+   "simulation": {
+    "battery": {
+     "float_v": 12.15,
+     "rest_v": 12.0,
+     "discharge_v_per_h": 0.12,
+     "charge_minutes": 120,
+     "runtime_hours": 24
+    },
+    "shelter": {
+     "temperature": 23.0,
+     "humidity": 52.0
+    },
+    "events": [
+     {
+      "type": "ac_loss",
+      "ago_hours": 16,
+      "minutes": 180
+     },
+     {
+      "type": "slow_charge",
+      "ago_hours": 13.2,
+      "minutes": 30,
+      "factor": 2.5
+     }
+    ]
+   }
+  },
+  {
+   "station_id": "BS12",
+   "name": "宁津街道办",
+   "station_type": "厂外固定站",
+   "comm_type": "4g",
+   "comm_id": "COM-BS12",
+   "sampling_interval_s": 60,
+   "calibration_factor": 1.0,
+   "background_dose": 0.081,
+   "dose_l1": 0.25,
+   "dose_l2": 0.4,
+   "battery_warn_v": 11.6,
+   "battery_alarm_v": 11.2,
+   "battery_drop_v": 0.3,
+   "battery_drop_minutes": 60,
+   "battery_charge_minutes": 120,
+   "battery_runtime_hours": 24,
+   "has_rain_gauge": false,
+   "devices": [
+    {
+     "device_id": "BS12-DET-01",
+     "name": "BS12 γ剂量率探测器",
+     "serial_no": "SN-BS12-0001",
+     "calibration_valid_until": "2027-06-30",
+     "simulation": {
+      "baseline": 0.081,
+      "noise": 0.03,
+      "rain_effect": 0.0,
+      "events": []
+     }
+    }
+   ],
+   "simulation": {
+    "battery": {
+     "float_v": 12.15,
+     "rest_v": 12.0,
+     "discharge_v_per_h": 0.12,
+     "charge_minutes": 120,
+     "runtime_hours": 24
+    },
+    "shelter": {
+     "temperature": 23.0,
+     "humidity": 52.0
+    },
+    "events": []
+   }
+  },
+  {
+   "station_id": "BS13",
+   "name": "东墩村",
+   "station_type": "厂外固定站",
+   "comm_type": "4g",
+   "comm_id": "COM-BS13",
+   "sampling_interval_s": 60,
+   "calibration_factor": 1.0,
+   "background_dose": 0.088,
+   "dose_l1": 0.25,
+   "dose_l2": 0.4,
+   "battery_warn_v": 11.6,
+   "battery_alarm_v": 11.2,
+   "battery_drop_v": 0.3,
+   "battery_drop_minutes": 60,
+   "battery_charge_minutes": 120,
+   "battery_runtime_hours": 24,
+   "has_rain_gauge": false,
+   "devices": [
+    {
+     "device_id": "BS13-DET-01",
+     "name": "BS13 γ剂量率探测器",
+     "serial_no": "SN-BS13-0001",
+     "calibration_valid_until": "2027-06-30",
+     "simulation": {
+      "baseline": 0.088,
+      "noise": 0.03,
+      "rain_effect": 0.0,
+      "events": [
+       {
+        "type": "gap",
+        "ago_hours": 49,
+        "minutes": 2940
+       }
+      ]
+     }
+    }
+   ],
+   "simulation": {
+    "battery": {
+     "float_v": 12.15,
+     "rest_v": 12.0,
+     "discharge_v_per_h": 0.12,
+     "charge_minutes": 120,
+     "runtime_hours": 24
+    },
+    "shelter": {
+     "temperature": 23.0,
+     "humidity": 52.0
+    },
+    "events": []
+   }
+  },
+  {
+   "station_id": "BS14",
+   "name": "镆铘岛",
+   "station_type": "厂外固定站",
+   "comm_type": "4g",
+   "comm_id": "COM-BS14",
+   "sampling_interval_s": 60,
+   "calibration_factor": 1.0,
+   "background_dose": 0.075,
+   "dose_l1": 0.25,
+   "dose_l2": 0.4,
+   "battery_warn_v": 11.6,
+   "battery_alarm_v": 11.2,
+   "battery_drop_v": 0.3,
+   "battery_drop_minutes": 60,
+   "battery_charge_minutes": 120,
+   "battery_runtime_hours": 24,
+   "has_rain_gauge": false,
+   "devices": [
+    {
+     "device_id": "BS14-DET-01",
+     "name": "BS14 γ剂量率探测器",
+     "serial_no": "SN-BS14-0001",
+     "calibration_valid_until": "2027-06-30",
+     "simulation": {
+      "baseline": 0.075,
+      "noise": 0.03,
+      "rain_effect": 0.0,
+      "events": []
+     }
+    }
+   ],
+   "simulation": {
+    "battery": {
+     "float_v": 12.15,
+     "rest_v": 12.0,
+     "discharge_v_per_h": 0.12,
+     "charge_minutes": 120,
+     "runtime_hours": 24
+    },
+    "shelter": {
+     "temperature": 23.0,
+     "humidity": 52.0
+    },
+    "events": []
+   }
+  },
+  {
+   "station_id": "BS15",
+   "name": "荣成生活区",
+   "station_type": "厂外固定站",
+   "comm_type": "4g",
+   "comm_id": "COM-BS15",
+   "sampling_interval_s": 60,
+   "calibration_factor": 1.0,
+   "background_dose": 0.079,
+   "dose_l1": 0.25,
+   "dose_l2": 0.4,
+   "battery_warn_v": 11.6,
+   "battery_alarm_v": 11.2,
+   "battery_drop_v": 0.3,
+   "battery_drop_minutes": 60,
+   "battery_charge_minutes": 120,
+   "battery_runtime_hours": 24,
+   "has_rain_gauge": false,
+   "devices": [
+    {
+     "device_id": "BS15-DET-01",
+     "name": "BS15 γ剂量率探测器",
+     "serial_no": "SN-BS15-0001",
+     "calibration_valid_until": "2027-06-30",
+     "simulation": {
+      "baseline": 0.079,
+      "noise": 0.03,
+      "rain_effect": 0.0,
+      "events": [
+       {
+        "type": "offline",
+        "ago_hours": 2,
+        "minutes": 180
+       }
+      ]
+     }
+    }
+   ],
+   "simulation": {
+    "battery": {
+     "float_v": 12.15,
+     "rest_v": 12.0,
+     "discharge_v_per_h": 0.12,
+     "charge_minutes": 120,
+     "runtime_hours": 24
+    },
+    "shelter": {
+     "temperature": 23.0,
+     "humidity": 52.0
+    },
+    "events": []
+   }
+  },
+  {
+   "station_id": "AS04",
+   "name": "监测站 04",
+   "station_type": "厂区固定站",
+   "comm_type": "fiber",
+   "comm_id": "COM-AS04",
+   "sampling_interval_s": 60,
+   "calibration_factor": 1.0,
+   "background_dose": 0.07,
+   "dose_l1": 0.25,
+   "dose_l2": 0.4,
+   "battery_warn_v": 11.6,
+   "battery_alarm_v": 11.2,
+   "battery_drop_v": 0.3,
+   "battery_drop_minutes": 60,
+   "battery_charge_minutes": 120,
+   "battery_runtime_hours": 24,
+   "has_rain_gauge": false,
+   "devices": [
+    {
+     "device_id": "AS04-DET-01",
+     "name": "AS04 γ剂量率探测器",
+     "serial_no": "SN-AS04-0001",
+     "calibration_valid_until": "2027-06-30",
+     "simulation": {
+      "baseline": 0.07,
+      "noise": 0.03,
+      "rain_effect": 0.0,
+      "events": [
+       {
+        "type": "stuck",
+        "ago_hours": 12,
+        "minutes": 180
+       }
+      ]
+     }
+    }
+   ],
+   "simulation": {
+    "battery": {
+     "float_v": 12.15,
+     "rest_v": 12.0,
+     "discharge_v_per_h": 0.12,
+     "charge_minutes": 120,
+     "runtime_hours": 24
+    },
+    "shelter": {
+     "temperature": 23.0,
+     "humidity": 52.0
+    },
+    "events": []
+   }
+  },
+  {
+   "station_id": "AS05",
+   "name": "监测站 05",
+   "station_type": "厂区固定站",
+   "comm_type": "fiber",
+   "comm_id": "COM-AS05",
+   "sampling_interval_s": 60,
+   "calibration_factor": 1.0,
+   "background_dose": 0.068,
+   "dose_l1": 0.25,
+   "dose_l2": 0.4,
+   "battery_warn_v": 11.6,
+   "battery_alarm_v": 11.2,
+   "battery_drop_v": 0.3,
+   "battery_drop_minutes": 60,
+   "battery_charge_minutes": 120,
+   "battery_runtime_hours": 24,
+   "has_rain_gauge": false,
+   "devices": [
+    {
+     "device_id": "AS05-DET-01",
+     "name": "AS05 γ剂量率探测器",
+     "serial_no": "SN-AS05-0001",
+     "calibration_valid_until": "2027-06-30",
+     "simulation": {
+      "baseline": 0.068,
+      "noise": 0.03,
+      "rain_effect": 0.0,
+      "events": [
+       {
+        "type": "comm_loss",
+        "ago_hours": 9,
+        "minutes": 30
+       }
+      ]
+     }
+    }
+   ],
+   "simulation": {
+    "battery": {
+     "float_v": 12.15,
+     "rest_v": 12.0,
+     "discharge_v_per_h": 0.12,
+     "charge_minutes": 120,
+     "runtime_hours": 24
+    },
+    "shelter": {
+     "temperature": 23.0,
+     "humidity": 52.0
+    },
+    "events": [
+     {
+      "type": "battery_drain",
+      "ago_hours": 8,
+      "minutes": 90,
+      "v_per_h": 0.5
+     }
+    ]
+   }
+  },
+  {
+   "station_id": "AS06",
+   "name": "监测站 06",
+   "station_type": "厂区固定站",
+   "comm_type": "fiber",
+   "comm_id": "COM-AS06",
+   "sampling_interval_s": 60,
+   "calibration_factor": 1.0,
+   "background_dose": 0.064,
+   "dose_l1": 0.25,
+   "dose_l2": 0.4,
+   "battery_warn_v": 11.6,
+   "battery_alarm_v": 11.2,
+   "battery_drop_v": 0.3,
+   "battery_drop_minutes": 60,
+   "battery_charge_minutes": 120,
+   "battery_runtime_hours": 24,
+   "has_rain_gauge": true,
+   "devices": [
+    {
+     "device_id": "AS06-DET-01",
+     "name": "AS06 γ剂量率探测器",
+     "serial_no": "SN-AS06-0001",
+     "calibration_valid_until": "2027-06-30",
+     "simulation": {
+      "baseline": 0.064,
+      "noise": 0.03,
+      "rain_effect": 0.015,
+      "events": []
+     }
+    }
+   ],
+   "simulation": {
+    "battery": {
+     "float_v": 12.15,
+     "rest_v": 12.0,
+     "discharge_v_per_h": 0.12,
+     "charge_minutes": 120,
+     "runtime_hours": 24
+    },
+    "shelter": {
+     "temperature": 23.0,
+     "humidity": 52.0
+    },
+    "events": [
+     {
+      "type": "ac_loss",
+      "ago_hours": 5,
+      "minutes": 600
+     },
+     {
+      "type": "runtime_drop",
+      "ago_hours": 20,
+      "minutes": 2000,
+      "runtime_hours": 18
+     },
+     {
+      "type": "rain",
+      "ago_hours": 4,
+      "minutes": 90,
+      "mm_per_hour": 2.5
+     }
+    ]
+   }
+  },
+  {
+   "station_id": "AS08",
+   "name": "监测站 08",
+   "station_type": "厂区固定站",
+   "comm_type": "fiber",
+   "comm_id": "COM-AS08",
+   "sampling_interval_s": 60,
+   "calibration_factor": 1.0,
+   "background_dose": 0.075,
+   "dose_l1": 0.25,
+   "dose_l2": 0.4,
+   "battery_warn_v": 11.6,
+   "battery_alarm_v": 11.2,
+   "battery_drop_v": 0.3,
+   "battery_drop_minutes": 60,
+   "battery_charge_minutes": 120,
+   "battery_runtime_hours": 24,
+   "has_rain_gauge": false,
+   "devices": [
+    {
+     "device_id": "AS08-DET-01",
+     "name": "AS08 γ剂量率探测器",
+     "serial_no": "SN-AS08-0001",
+     "calibration_valid_until": "2027-06-30",
+     "simulation": {
+      "baseline": 0.075,
+      "noise": 0.03,
+      "rain_effect": 0.0,
+      "events": [
+       {
+        "type": "fault",
+        "ago_hours": 1.5,
+        "minutes": 180
+       }
+      ]
+     }
+    }
+   ],
+   "simulation": {
+    "battery": {
+     "float_v": 12.15,
+     "rest_v": 12.0,
+     "discharge_v_per_h": 0.12,
+     "charge_minutes": 120,
+     "runtime_hours": 24
+    },
+    "shelter": {
+     "temperature": 23.0,
+     "humidity": 52.0
+    },
+    "events": []
+   }
+  }
+ ]
 }

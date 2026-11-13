@@ -1,19 +1,19 @@
-"""Station data reads shared by the REST API and the agent's tools (read-only)."""
+"""Station data reads shared by the REST API, the analysis and the assistant (read-only)."""
 
 import asyncio
 from datetime import datetime
 
 from app.stations.model import (
     CODE_STATUS,
-    DEVICE_METRICS,
-    STATION_METRICS,
-    STATION_NODE,
+    METRIC_TYPE,
+    METRICS_BY_TYPE,
     UNITS,
+    EquipmentType,
     Metric,
     Station,
 )
 from app.stations.store import StationStore
-from app.timeseries.iotdb import Point, TimeSeriesStore
+from app.timeseries.iotdb import WATERMARK_SERIES, Point, TimeSeriesStore
 
 _FLAGS = {Metric.COMM: ("ok", "interrupted"), Metric.AC_POWER: ("on", "off"),
           Metric.CHARGING: ("charging", "not_charging"), Metric.DOOR: ("open", "closed")}
@@ -49,31 +49,41 @@ class StationService:
             raise StationNotFound(station_id)
         return s
 
+    async def watermark(self) -> int | None:
+        """Consumption watermark written by the MQTT ingester (None = never written)."""
+        p = await self.store.latest(*WATERMARK_SERIES)
+        return int(p.value) if p and p.value is not None else None
+
     async def latest(self, station: Station) -> dict:
         """Latest stored value of every series of the station (as reported, not calibrated)."""
-        async def one(node: str, metric: Metric) -> dict | None:
-            return readable(metric, await self.store.latest(station.station_id, node,
+        async def one(equipment: str, metric: Metric) -> dict | None:
+            return readable(metric, await self.store.latest(station.station_id, equipment,
                                                             metric.value))
 
-        devices = []
-        for d in station.devices:
-            values = await asyncio.gather(*(one(d.device_id, m) for m in DEVICE_METRICS))
-            devices.append({"device_id": d.device_id, "name": d.name, "enabled": d.enabled,
-                            **{m.value: v for m, v in zip(DEVICE_METRICS, values,
-                                                          strict=True)}})
-        values = await asyncio.gather(*(one(STATION_NODE, m) for m in STATION_METRICS))
+        async def unit(equipment: str, kind: EquipmentType) -> dict:
+            metrics = METRICS_BY_TYPE[kind]
+            values = await asyncio.gather(*(one(equipment, m) for m in metrics))
+            return {m.value: v for m, v in zip(metrics, values, strict=True)}
+
+        devices = [{"device_id": d.device_id, "name": d.name, "enabled": d.enabled,
+                    **await unit(d.device_id, EquipmentType.DETECTOR)} for d in station.devices]
         return {"devices": devices,
-                "station": {m.value: v for m, v in zip(STATION_METRICS, values, strict=True)}}
+                "backup_power": {"equipment_id": station.backup_power_id,
+                                 **await unit(station.backup_power_id,  # type: ignore[arg-type]
+                                              EquipmentType.BACKUP_POWER)},
+                "environment": {"equipment_id": station.environment_id,
+                                **await unit(station.environment_id,  # type: ignore[arg-type]
+                                             EquipmentType.ENVIRONMENT)}}
 
     async def telemetry(self, station: Station, device_id: str | None, metric: Metric,
                         start: datetime, end: datetime, interval_seconds: int | None) -> dict:
-        node = device_id or STATION_NODE
-        if device_id is not None and station.device(device_id) is None:
-            raise StationNotFound(f"{station.station_id}/{device_id}")
-        expected = DEVICE_METRICS if device_id else STATION_METRICS
-        if metric not in expected:
-            raise ValueError(f"metric {metric.value} is not a "
-                             f"{'device' if device_id else 'station'} metric")
+        kind = METRIC_TYPE[metric]
+        if kind is EquipmentType.DETECTOR:
+            if device_id is None or station.device(device_id) is None:
+                raise StationNotFound(f"{station.station_id}/{device_id}")
+        elif device_id is not None and station.equipment_type(device_id) is not kind:
+            raise ValueError(f"metric {metric.value} belongs to the station's {kind.value} unit")
+        node = station.node_for(metric, device_id)
         if interval_seconds:
             buckets = await self.store.aggregate(station.station_id, node, metric.value, start,
                                                  end, interval_seconds)
@@ -83,7 +93,7 @@ class StationService:
             points = await self.store.query(station.station_id, node, metric.value, start, end,
                                             limit=10_000)
             data = [{"time": p.time.isoformat(), "value": p.value} for p in points]
-        return {"station_id": station.station_id, "device_id": device_id,
+        return {"station_id": station.station_id, "equipment_id": node,
                 "metric": metric.value, "unit": UNITS.get(metric),
                 "calibration_factor": station.calibration_factor
                 if metric == Metric.DOSE_RATE else None,
