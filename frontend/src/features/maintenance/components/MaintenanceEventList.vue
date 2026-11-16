@@ -3,8 +3,8 @@ import { computed, ref, watch } from 'vue'
 import { useMaintenanceStore } from '../stores/maintenance'
 import {
   eventSourceLabels,
+  healthLevelLabels,
   reviewOutcomeLabels,
-  riskLevelLabels,
   type MaintenanceEvent,
 } from '../types'
 import { formatDateTime } from '../utils'
@@ -122,9 +122,9 @@ function setPage(page: number) {
                   <strong>{{ event.eventTitle }}</strong>
                   <span
                     class="risk-tag"
-                    :data-risk="event.riskLevel"
+                    :data-health-level="event.healthLevel"
                   >
-                    {{ riskLevelLabels[event.riskLevel] }}
+                    {{ healthLevelLabels[event.healthLevel] }}
                   </span>
                 </div>
                 <div class="event-cell__meta">
@@ -503,12 +503,12 @@ function setPage(page: number) {
   white-space: nowrap;
 }
 
-.risk-tag[data-risk="inspect"] {
+.risk-tag[data-health-level="inspect"] {
   background: #fff0e9;
   color: #ad5628;
 }
 
-.risk-tag[data-risk="insufficient_data"] {
+.risk-tag[data-health-level="insufficient_data"] {
   background: #eef2f5;
   color: #5f7283;
 }

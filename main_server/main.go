@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,9 +12,6 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
-
-	"cnb.cool/SWFH-26-122/SWFH-26-122Agent/main_server/internal/config"
-	"cnb.cool/SWFH-26-122/SWFH-26-122Agent/main_server/internal/httpapi"
 )
 
 const serviceVersion = "0.1.0"
@@ -26,7 +24,14 @@ func main() {
 }
 
 func run() error {
-	cfg, err := config.Load()
+	configPath := flag.String(
+		"config",
+		defaultConfigPath,
+		"path to the JSON configuration file",
+	)
+	flag.Parse()
+
+	cfg, err := loadConfig(*configPath)
 	if err != nil {
 		return fmt.Errorf("load configuration: %w", err)
 	}
@@ -34,13 +39,7 @@ func run() error {
 	logger := newLogger(cfg)
 	slog.SetDefault(logger)
 
-	handler := httpapi.New(httpapi.Options{
-		Version:               serviceVersion,
-		Environment:           cfg.Environment,
-		ComputeServiceBaseURL: cfg.ComputeServiceBaseURL,
-		ComputeServiceTimeout: cfg.ComputeServiceTimeout,
-		ComputeServiceAPIKey:  cfg.ComputeServiceAPIKey,
-	}, logger)
+	handler := newServer(cfg, logger).handler()
 
 	server := &http.Server{
 		Addr:              cfg.Addr,
@@ -92,7 +91,7 @@ func run() error {
 	}
 }
 
-func newLogger(cfg config.Config) *slog.Logger {
+func newLogger(cfg config) *slog.Logger {
 	options := &slog.HandlerOptions{Level: cfg.LogLevel}
 
 	var handler slog.Handler

@@ -1,12 +1,12 @@
-package httpapi
+package main
 
 import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -17,8 +17,8 @@ func TestAssistantChatProxiesSSE(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Errorf("upstream method = %s, want POST", r.Method)
 		}
-		if r.URL.Path != "/api/v1/chat" {
-			t.Errorf("upstream path = %s, want /api/v1/chat", r.URL.Path)
+		if r.URL.Path != "/custom/chat" {
+			t.Errorf("upstream path = %s, want /custom/chat", r.URL.Path)
 		}
 		if value := r.Header.Get(requestIDHeader); value != "client-request" {
 			t.Errorf("upstream X-Request-ID = %q, want client-request", value)
@@ -50,7 +50,13 @@ func TestAssistantChatProxiesSSE(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	handler := newAssistantTestHandler(t, upstream.URL, "server-key", 3*time.Second)
+	handler := newAssistantTestHandler(
+		t,
+		upstream.URL,
+		"/custom/chat",
+		"server-key",
+		3*time.Second,
+	)
 	request := httptest.NewRequest(
 		http.MethodPost,
 		"/api/v1/assistant/chat",
@@ -83,6 +89,38 @@ func TestAssistantChatProxiesSSE(t *testing.T) {
 	}
 }
 
+func TestAssistantChatOmitsEmptyAPIKey(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if value := r.Header.Get("X-API-Key"); value != "" {
+			t.Errorf("upstream X-API-Key = %q, want empty", value)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: done\ndata: {\"message\":{\"content\":\"ok\"}}\n\n")
+	}))
+	defer upstream.Close()
+
+	handler := newAssistantTestHandler(
+		t,
+		upstream.URL,
+		"/api/v1/chat",
+		"",
+		time.Second,
+	)
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/assistant/chat",
+		strings.NewReader(`{"message":"你好"}`),
+	)
+	request.Header.Set("X-API-Key", "browser-key-must-not-be-forwarded")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestAssistantChatMapsUpstreamError(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -91,7 +129,13 @@ func TestAssistantChatMapsUpstreamError(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	handler := newAssistantTestHandler(t, upstream.URL, "", time.Second)
+	handler := newAssistantTestHandler(
+		t,
+		upstream.URL,
+		"/api/v1/chat",
+		"",
+		time.Second,
+	)
 	request := httptest.NewRequest(
 		http.MethodPost,
 		"/api/v1/assistant/chat",
@@ -122,7 +166,13 @@ func TestAssistantChatMapsUpstreamError(t *testing.T) {
 }
 
 func TestAssistantChatRejectsInvalidRequests(t *testing.T) {
-	handler := newAssistantTestHandler(t, "http://127.0.0.1:1", "", time.Second)
+	handler := newAssistantTestHandler(
+		t,
+		"http://127.0.0.1:1",
+		"/api/v1/chat",
+		"",
+		time.Second,
+	)
 	tests := []struct {
 		name string
 		body string
@@ -158,7 +208,13 @@ func TestAssistantChatReportsUnavailableAndTimeout(t *testing.T) {
 		upstreamURL := upstream.URL
 		upstream.Close()
 
-		handler := newAssistantTestHandler(t, upstreamURL, "", time.Second)
+		handler := newAssistantTestHandler(
+			t,
+			upstreamURL,
+			"/api/v1/chat",
+			"",
+			time.Second,
+		)
 		recorder := serveAssistantRequest(handler, `{"message":"你好"}`)
 
 		if recorder.Code != http.StatusBadGateway {
@@ -176,7 +232,13 @@ func TestAssistantChatReportsUnavailableAndTimeout(t *testing.T) {
 		}))
 		defer upstream.Close()
 
-		handler := newAssistantTestHandler(t, upstream.URL, "", 20*time.Millisecond)
+		handler := newAssistantTestHandler(
+			t,
+			upstream.URL,
+			"/api/v1/chat",
+			"",
+			20*time.Millisecond,
+		)
 		recorder := serveAssistantRequest(handler, `{"message":"你好"}`)
 
 		if recorder.Code != http.StatusGatewayTimeout {
@@ -187,7 +249,13 @@ func TestAssistantChatReportsUnavailableAndTimeout(t *testing.T) {
 }
 
 func TestAssistantChatMethodNotAllowed(t *testing.T) {
-	handler := newAssistantTestHandler(t, "http://127.0.0.1:1", "", time.Second)
+	handler := newAssistantTestHandler(
+		t,
+		"http://127.0.0.1:1",
+		"/api/v1/chat",
+		"",
+		time.Second,
+	)
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/assistant/chat", nil)
 	recorder := httptest.NewRecorder()
 
@@ -199,34 +267,6 @@ func TestAssistantChatMethodNotAllowed(t *testing.T) {
 	if allow := recorder.Header().Get("Allow"); allow != "POST" {
 		t.Errorf("Allow = %q, want POST", allow)
 	}
-}
-
-func newAssistantTestHandler(
-	t *testing.T,
-	baseURL string,
-	apiKey string,
-	timeout time.Duration,
-) http.Handler {
-	t.Helper()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New(Options{
-		Version:               "test",
-		Environment:           "test",
-		ComputeServiceBaseURL: baseURL,
-		ComputeServiceTimeout: timeout,
-		ComputeServiceAPIKey:  apiKey,
-	}, logger)
-}
-
-func serveAssistantRequest(handler http.Handler, body string) *httptest.ResponseRecorder {
-	request := httptest.NewRequest(
-		http.MethodPost,
-		"/api/v1/assistant/chat",
-		strings.NewReader(body),
-	)
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, request)
-	return recorder
 }
 
 func TestUpstreamErrorDetails(t *testing.T) {
@@ -279,4 +319,38 @@ func TestWriteSSEError(t *testing.T) {
 	if body.String() != expected {
 		t.Errorf("SSE error = %q, want %q", body.String(), expected)
 	}
+}
+
+func newAssistantTestHandler(
+	t *testing.T,
+	baseURL string,
+	chatPath string,
+	apiKey string,
+	timeout time.Duration,
+) http.Handler {
+	t.Helper()
+	base, err := url.Parse(strings.TrimRight(baseURL, "/"))
+	if err != nil {
+		t.Fatalf("parse test compute URL: %v", err)
+	}
+	cfg := config{
+		Addr:            defaultAddr,
+		Environment:     "test",
+		ComputeURL:      base.JoinPath(strings.TrimPrefix(chatPath, "/")),
+		ComputeTimeout:  timeout,
+		ComputeAPIKey:   apiKey,
+		ShutdownTimeout: time.Second,
+	}
+	return newServer(cfg, discardLogger()).handler()
+}
+
+func serveAssistantRequest(handler http.Handler, body string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/assistant/chat",
+		strings.NewReader(body),
+	)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return recorder
 }

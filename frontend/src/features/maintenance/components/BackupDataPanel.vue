@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import type { MaintenanceEvent } from '../types'
+import type { BackupTrend } from '../types'
 import { formatPercent } from '../utils'
 
 const props = defineProps<{
-  event: MaintenanceEvent
+  trend: BackupTrend
 }>()
 </script>
 
@@ -27,7 +27,7 @@ const props = defineProps<{
           <p>电量不等同于剩余容量</p>
         </div>
         <strong>
-          {{ formatPercent(props.event.backupTrend.currentBattery / 100) }}
+          {{ formatPercent(props.trend.currentBattery / 100) }}
         </strong>
       </section>
 
@@ -40,14 +40,12 @@ const props = defineProps<{
         <div class="runtime-values">
           <div>
             <span>当前估算</span>
-            <strong>{{ props.event.backupTrend.estimatedRuntimeHours }} h</strong>
+            <strong>{{ props.trend.estimatedRuntimeHours }} h</strong>
           </div>
           <i aria-hidden="true"></i>
           <div>
             <span>历史参考</span>
-            <strong>
-              {{ props.event.backupTrend.historicalRuntimeHours }} h
-            </strong>
+            <strong>{{ props.trend.historicalRuntimeHours }} h</strong>
           </div>
         </div>
 

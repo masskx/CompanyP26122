@@ -1,4 +1,4 @@
-package httpapi
+package main
 
 import (
 	"bytes"
@@ -7,29 +7,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
 )
 
 const (
-	assistantChatPath        = "api/v1/chat"
 	assistantMaxBodyBytes    = 64 * 1024
 	assistantMaxMessageRunes = 4000
 	assistantMaxSessionRunes = 128
 	upstreamErrorBodyBytes   = 64 * 1024
 )
-
-type assistantProxy struct {
-	endpoint *url.URL
-	client   *http.Client
-	timeout  time.Duration
-	apiKey   string
-	logger   *slog.Logger
-}
 
 type assistantChatRequest struct {
 	Message   string  `json:"message"`
@@ -42,43 +31,7 @@ type assistantUpstreamRequest struct {
 	Stream    bool   `json:"stream"`
 }
 
-func newAssistantProxy(options Options, logger *slog.Logger) (*assistantProxy, error) {
-	baseURL, err := url.Parse(options.ComputeServiceBaseURL)
-	if err != nil {
-		return nil, fmt.Errorf("parse compute service base URL: %w", err)
-	}
-	if baseURL.Scheme != "http" && baseURL.Scheme != "https" {
-		return nil, fmt.Errorf("compute service base URL must use http or https")
-	}
-	if baseURL.Host == "" {
-		return nil, fmt.Errorf("compute service base URL must include a host")
-	}
-	if options.ComputeServiceTimeout <= 0 {
-		return nil, fmt.Errorf("compute service timeout must be greater than zero")
-	}
-
-	return &assistantProxy{
-		endpoint: baseURL.JoinPath(assistantChatPath),
-		client:   &http.Client{},
-		timeout:  options.ComputeServiceTimeout,
-		apiKey:   strings.TrimSpace(options.ComputeServiceAPIKey),
-		logger:   logger,
-	}, nil
-}
-
-func (a *api) handleAssistantChat(w http.ResponseWriter, r *http.Request) {
-	if a.assistant == nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse{
-			Code:      "assistant_not_configured",
-			Message:   "assistant service is not configured",
-			RequestID: requestIDFromContext(r.Context()),
-		})
-		return
-	}
-	a.assistant.serve(w, r)
-}
-
-func (p *assistantProxy) serve(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleAssistantChat(w http.ResponseWriter, r *http.Request) {
 	requestID := requestIDFromContext(r.Context())
 	request, err := decodeAssistantRequest(w, r)
 	if err != nil {
@@ -107,16 +60,16 @@ func (p *assistantProxy) serve(w http.ResponseWriter, r *http.Request) {
 	// SSE can legitimately outlive the normal 10-second write timeout.
 	controller := http.NewResponseController(w)
 	if err := controller.SetWriteDeadline(time.Time{}); err != nil {
-		p.logger.Debug("could not clear assistant response write deadline", "error", err)
+		s.logger.Debug("could not clear assistant response write deadline", "error", err)
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), p.timeout)
+	ctx, cancel := context.WithTimeout(r.Context(), s.timeout)
 	defer cancel()
 
 	upstreamRequest, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
-		p.endpoint.String(),
+		s.computeURL.String(),
 		bytes.NewReader(payload),
 	)
 	if err != nil {
@@ -133,11 +86,11 @@ func (p *assistantProxy) serve(w http.ResponseWriter, r *http.Request) {
 	if userID := strings.TrimSpace(r.Header.Get("X-User-Id")); userID != "" {
 		upstreamRequest.Header.Set("X-User-Id", userID)
 	}
-	if p.apiKey != "" {
-		upstreamRequest.Header.Set("X-API-Key", p.apiKey)
+	if s.computeKey != "" {
+		upstreamRequest.Header.Set("X-API-Key", s.computeKey)
 	}
 
-	upstream, err := p.client.Do(upstreamRequest)
+	upstream, err := s.client.Do(upstreamRequest)
 	if err != nil {
 		if r.Context().Err() != nil {
 			return
@@ -146,7 +99,7 @@ func (p *assistantProxy) serve(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			code, status = "assistant_upstream_timeout", http.StatusGatewayTimeout
 		}
-		p.logger.Error(
+		s.logger.Error(
 			"assistant upstream request failed",
 			"request_id", requestID,
 			"code", code,

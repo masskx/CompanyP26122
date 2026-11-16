@@ -1,0 +1,12 @@
+{
+  "listen_addr": "127.0.0.1:8080",
+  "environment": "development",
+  "log_level": "info",
+  "shutdown_timeout": "10s",
+  "compute": {
+    "base_url": "http://127.0.0.1:8000",
+    "chat_path": "/api/v1/chat",
+    "timeout": "3m",
+    "api_key": ""
+  }
+}

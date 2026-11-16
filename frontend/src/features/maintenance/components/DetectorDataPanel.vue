@@ -3,13 +3,13 @@ import { computed, ref } from 'vue'
 import type { EChartsCoreOption } from 'echarts/core'
 import type {
   DetectorTrendPeriod,
-  MaintenanceEvent,
+  DetectorTrend,
   TimeSeriesPoint,
 } from '../types'
 import EChart from './EChart.vue'
 
 const props = defineProps<{
-  event: MaintenanceEvent
+  trend: DetectorTrend
 }>()
 
 const periods: Array<{
@@ -37,7 +37,7 @@ const periods: Array<{
 const activePeriod = ref<DetectorTrendPeriod>('current24h')
 
 const activeData = computed(
-  () => props.event.detectorTrend[activePeriod.value],
+  () => props.trend[activePeriod.value],
 )
 
 const activePeriodMeta = computed(

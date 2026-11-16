@@ -8,8 +8,8 @@ import type {
   BackupTrend,
   DetectorPeriodTrend,
   DetectorTrend,
+  HealthLevel,
   MaintenanceEvent,
-  RiskLevel,
 } from '../types'
 
 const CHART_TIMES = [
@@ -155,12 +155,12 @@ function createDetectorAnalysis(
   eventTitle: string,
   dosePeak: number,
   rainfallPeak: number,
-  riskLevel: RiskLevel,
+  healthLevel: HealthLevel,
   generatedAt: string,
   explanation?: string,
 ): AiAnalysis {
-  const insufficient = riskLevel === 'insufficient_data'
-  const findingSeverity = riskLevel === 'inspect' ? 'inspect' : 'watch'
+  const insufficient = healthLevel === 'insufficient_data'
+  const findingSeverity = healthLevel === 'inspect' ? 'inspect' : 'watch'
   const baselineDose = 0.061
   const doseChange = Number(
     (((dosePeak - baselineDose) / baselineDose) * 100).toFixed(1),
@@ -192,7 +192,7 @@ function createDetectorAnalysis(
           message: `剂量率升高时段与降雨峰值 ${rainfallPeak.toFixed(1)} mm 部分重合。`,
           sourceRefs: [`ts:${siteId}:rainfall:${generatedAt}`],
         },
-        ...(riskLevel === 'inspect'
+        ...(healthLevel === 'inspect'
           ? [
               {
                 ruleId: 'DETECTOR-CONSECUTIVE-ALARM',
@@ -261,15 +261,15 @@ function createBackupAnalysis(
   currentBattery: number,
   estimatedRuntimeHours: number,
   historicalRuntimeHours: number,
-  riskLevel: RiskLevel,
+  healthLevel: HealthLevel,
   generatedAt: string,
   explanation?: string,
 ): AiAnalysis {
   const runtimeDrop = Math.round(
     (1 - estimatedRuntimeHours / historicalRuntimeHours) * 100,
   )
-  const insufficient = riskLevel === 'insufficient_data'
-  const findingSeverity = riskLevel === 'inspect' ? 'inspect' : 'watch'
+  const insufficient = healthLevel === 'insufficient_data'
+  const findingSeverity = healthLevel === 'inspect' ? 'inspect' : 'watch'
   const findings: AnalysisFinding[] = insufficient
     ? []
     : [
@@ -372,7 +372,7 @@ const additionalPendingEventSeeds = [
     equipmentName: '电离室探测器',
     eventTitle: '剂量率间歇升高事件',
     eventSource: 'monitoring_anomaly',
-    riskLevel: 'watch',
+    healthLevel: 'watch',
     currentBattery: 76,
     estimatedRuntimeHours: 22,
     historicalRuntimeHours: 24,
@@ -386,7 +386,7 @@ const additionalPendingEventSeeds = [
     equipmentName: '备电系统',
     eventTitle: '备电充电耗时增加',
     eventSource: 'run_trend',
-    riskLevel: 'watch',
+    healthLevel: 'watch',
     currentBattery: 71,
     estimatedRuntimeHours: 20,
     historicalRuntimeHours: 23,
@@ -400,7 +400,7 @@ const additionalPendingEventSeeds = [
     equipmentName: '电离室探测器',
     eventTitle: '降雨期间剂量率波动',
     eventSource: 'monitoring_anomaly',
-    riskLevel: 'watch',
+    healthLevel: 'watch',
     currentBattery: 79,
     estimatedRuntimeHours: 23,
     historicalRuntimeHours: 24,
@@ -414,7 +414,7 @@ const additionalPendingEventSeeds = [
     equipmentName: '备电系统',
     eventTitle: '备电电压短时波动',
     eventSource: 'device_alarm',
-    riskLevel: 'watch',
+    healthLevel: 'watch',
     currentBattery: 67,
     estimatedRuntimeHours: 19,
     historicalRuntimeHours: 22,
@@ -428,7 +428,7 @@ const additionalPendingEventSeeds = [
     equipmentName: '电离室探测器',
     eventTitle: '剂量率阶跃变化事件',
     eventSource: 'run_trend',
-    riskLevel: 'watch',
+    healthLevel: 'watch',
     currentBattery: 74,
     estimatedRuntimeHours: 21,
     historicalRuntimeHours: 23,
@@ -442,7 +442,7 @@ const additionalPendingEventSeeds = [
     equipmentName: '备电系统',
     eventTitle: '备电续航参考下降',
     eventSource: 'run_trend',
-    riskLevel: 'inspect',
+    healthLevel: 'inspect',
     currentBattery: 61,
     estimatedRuntimeHours: 17,
     historicalRuntimeHours: 23,
@@ -456,7 +456,7 @@ const additionalPendingEventSeeds = [
     equipmentName: '电离室探测器',
     eventTitle: '探测器自检记录异常',
     eventSource: 'device_alarm',
-    riskLevel: 'inspect',
+    healthLevel: 'inspect',
     currentBattery: 70,
     estimatedRuntimeHours: 20,
     historicalRuntimeHours: 22,
@@ -470,7 +470,7 @@ const additionalPendingEventSeeds = [
     equipmentName: '备电系统',
     eventTitle: '备电充电恢复偏慢',
     eventSource: 'run_trend',
-    riskLevel: 'watch',
+    healthLevel: 'watch',
     currentBattery: 72,
     estimatedRuntimeHours: 20,
     historicalRuntimeHours: 22,
@@ -484,7 +484,7 @@ const additionalPendingEventSeeds = [
     equipmentName: '电离室探测器',
     eventTitle: '剂量率持续偏高事件',
     eventSource: 'monitoring_anomaly',
-    riskLevel: 'inspect',
+    healthLevel: 'inspect',
     currentBattery: 73,
     estimatedRuntimeHours: 21,
     historicalRuntimeHours: 23,
@@ -498,7 +498,7 @@ const additionalPendingEventSeeds = [
     equipmentName: '备电系统',
     eventTitle: '备电电压波动事件',
     eventSource: 'device_alarm',
-    riskLevel: 'watch',
+    healthLevel: 'watch',
     currentBattery: 66,
     estimatedRuntimeHours: 19,
     historicalRuntimeHours: 21,
@@ -512,7 +512,7 @@ const additionalPendingEventSeeds = [
     equipmentName: '电离室探测器',
     eventTitle: '通信恢复后数据跳变',
     eventSource: 'device_alarm',
-    riskLevel: 'insufficient_data',
+    healthLevel: 'insufficient_data',
     currentBattery: 69,
     estimatedRuntimeHours: 20,
     historicalRuntimeHours: 21,
@@ -526,7 +526,7 @@ const additionalPendingEventSeeds = [
     equipmentName: '备电系统',
     eventTitle: '备电负载变化事件',
     eventSource: 'run_trend',
-    riskLevel: 'watch',
+    healthLevel: 'watch',
     currentBattery: 75,
     estimatedRuntimeHours: 22,
     historicalRuntimeHours: 24,
@@ -540,7 +540,7 @@ const additionalPendingEventSeeds = [
     equipmentName: '电离室探测器',
     eventTitle: '剂量率短时回落事件',
     eventSource: 'run_trend',
-    riskLevel: 'watch',
+    healthLevel: 'watch',
     currentBattery: 77,
     estimatedRuntimeHours: 22,
     historicalRuntimeHours: 24,
@@ -554,7 +554,7 @@ const additionalPendingEventSeeds = [
     equipmentName: '备电系统',
     eventTitle: '续航估算偏差事件',
     eventSource: 'run_trend',
-    riskLevel: 'insufficient_data',
+    healthLevel: 'insufficient_data',
     currentBattery: 63,
     estimatedRuntimeHours: 18,
     historicalRuntimeHours: 20,
@@ -568,34 +568,24 @@ function createAdditionalPendingEvents(): MaintenanceEvent[] {
     const dosePeak = Number((0.074 + (index % 5) * 0.003).toFixed(3))
     const rainfallPeak = Number((1.4 + (index % 4) * 0.4).toFixed(1))
 
-    return {
+    const eventBase = {
       id: seed.eventNumber.toLowerCase(),
       eventNumber: seed.eventNumber,
       triggeredAt,
       siteId: seed.siteId,
       siteName: seed.siteName,
-      equipmentType: seed.equipmentType,
       equipmentName: seed.equipmentName,
       eventTitle: seed.eventTitle,
       eventSource: seed.eventSource,
-      riskLevel: seed.riskLevel,
-      status: 'pending',
-      detectorTrend: createDetectorTrend(
-        0.9 + (index % 5) * 0.04,
-        0.5 + (index % 3) * 0.25,
-      ),
-      backupTrend: createBackupTrend(
-        seed.currentBattery,
-        seed.estimatedRuntimeHours,
-        seed.historicalRuntimeHours,
-      ),
+      healthLevel: seed.healthLevel,
+      status: 'pending' as const,
       aiAnalysis: isDetector
         ? createDetectorAnalysis(
             seed.siteId,
             seed.eventTitle,
             dosePeak,
             rainfallPeak,
-            seed.riskLevel,
+            seed.healthLevel,
             triggeredAt,
           )
         : createBackupAnalysis(
@@ -603,9 +593,30 @@ function createAdditionalPendingEvents(): MaintenanceEvent[] {
             seed.currentBattery,
             seed.estimatedRuntimeHours,
             seed.historicalRuntimeHours,
-            seed.riskLevel,
+            seed.healthLevel,
             triggeredAt,
           ),
+    }
+
+    if (isDetector) {
+      return {
+        ...eventBase,
+        equipmentType: 'detector',
+        detectorTrend: createDetectorTrend(
+          0.9 + (index % 5) * 0.04,
+          0.5 + (index % 3) * 0.25,
+        ),
+      }
+    }
+
+    return {
+      ...eventBase,
+      equipmentType: 'backup_power',
+      backupTrend: createBackupTrend(
+        seed.currentBattery,
+        seed.estimatedRuntimeHours,
+        seed.historicalRuntimeHours,
+      ),
     }
   })
 }
@@ -622,9 +633,8 @@ export function createDemoEvents(): MaintenanceEvent[] {
       equipmentName: '备电系统',
       eventTitle: '备电续航下降事件',
       eventSource: 'run_trend',
-      riskLevel: 'inspect',
+      healthLevel: 'inspect',
       status: 'pending',
-      detectorTrend: createDetectorTrend(0.94, 1.2),
       backupTrend: createBackupTrend(62, 18, 24),
       aiAnalysis: createBackupAnalysis(
         'AS06',
@@ -646,10 +656,9 @@ export function createDemoEvents(): MaintenanceEvent[] {
       equipmentName: '电离室探测器',
       eventTitle: '剂量率短时波动事件',
       eventSource: 'monitoring_anomaly',
-      riskLevel: 'watch',
+      healthLevel: 'watch',
       status: 'pending',
       detectorTrend: createDetectorTrend(1.08, 1),
-      backupTrend: createBackupTrend(73, 21, 23),
       aiAnalysis: createDetectorAnalysis(
         'AS06',
         '剂量率短时波动',
@@ -669,10 +678,9 @@ export function createDemoEvents(): MaintenanceEvent[] {
       equipmentName: '电离室探测器',
       eventTitle: '电离室剂量率波动事件',
       eventSource: 'monitoring_anomaly',
-      riskLevel: 'watch',
+      healthLevel: 'watch',
       status: 'pending',
       detectorTrend: createDetectorTrend(1.02, 0.9),
-      backupTrend: createBackupTrend(69, 20, 22),
       aiAnalysis: createDetectorAnalysis(
         'AS12',
         '剂量率波动',
@@ -692,9 +700,8 @@ export function createDemoEvents(): MaintenanceEvent[] {
       equipmentName: '备电系统',
       eventTitle: '备电充电恢复偏慢',
       eventSource: 'run_trend',
-      riskLevel: 'watch',
+      healthLevel: 'watch',
       status: 'pending',
-      detectorTrend: createDetectorTrend(0.88, 0.4),
       backupTrend: createBackupTrend(74, 20, 22),
       aiAnalysis: createBackupAnalysis(
         'BS11',
@@ -716,10 +723,9 @@ export function createDemoEvents(): MaintenanceEvent[] {
       equipmentName: '电离室探测器',
       eventTitle: '探测器设备故障报警',
       eventSource: 'device_alarm',
-      riskLevel: 'insufficient_data',
+      healthLevel: 'insufficient_data',
       status: 'pending',
       detectorTrend: createDetectorTrend(0.72, 0.1),
-      backupTrend: createBackupTrend(65, 19, 21),
       aiAnalysis: createDetectorAnalysis(
         'AS08',
         '设备故障报警',
@@ -740,9 +746,8 @@ export function createDemoEvents(): MaintenanceEvent[] {
       equipmentName: '备电系统',
       eventTitle: '备电电压波动事件',
       eventSource: 'run_trend',
-      riskLevel: 'watch',
+      healthLevel: 'watch',
       status: 'pending',
-      detectorTrend: createDetectorTrend(0.91, 0.2),
       backupTrend: createBackupTrend(68, 19, 23),
       aiAnalysis: createBackupAnalysis(
         'BS13',
@@ -764,10 +769,9 @@ export function createDemoEvents(): MaintenanceEvent[] {
       equipmentName: '电离室探测器',
       eventTitle: '剂量率与降雨相关波动',
       eventSource: 'monitoring_anomaly',
-      riskLevel: 'watch',
+      healthLevel: 'watch',
       status: 'confirmed',
       detectorTrend: createDetectorTrend(0.98, 1.1),
-      backupTrend: createBackupTrend(78, 23, 24),
       aiAnalysis: createDetectorAnalysis(
         'AS03',
         '剂量率与降雨相关波动',
@@ -793,9 +797,8 @@ export function createDemoEvents(): MaintenanceEvent[] {
       equipmentName: '备电系统',
       eventTitle: '备电容量测试建议',
       eventSource: 'run_trend',
-      riskLevel: 'inspect',
+      healthLevel: 'inspect',
       status: 'confirmed',
-      detectorTrend: createDetectorTrend(0.86, 0.3),
       backupTrend: createBackupTrend(64, 17, 22),
       aiAnalysis: createBackupAnalysis(
         'AS02',

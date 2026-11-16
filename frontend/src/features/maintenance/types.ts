@@ -6,7 +6,7 @@ export type EquipmentType = 'detector' | 'backup_power'
 
 export type EquipmentFilter = 'all' | EquipmentType
 
-export type RiskLevel = 'watch' | 'inspect' | 'insufficient_data'
+export type HealthLevel = 'watch' | 'inspect' | 'insufficient_data'
 
 export type EventSource =
   | 'monitoring_anomaly'
@@ -119,30 +119,43 @@ export interface HumanReview {
   updatedAt?: string
 }
 
-export interface MaintenanceEvent {
+interface MaintenanceEventBase {
   id: string
   eventNumber: string
   triggeredAt: string
   siteId: string
   siteName: string
-  equipmentType: EquipmentType
   equipmentName: string
   eventTitle: string
   eventSource: EventSource
-  riskLevel: RiskLevel
+  healthLevel: HealthLevel
   status: MaintenanceStatus
-  detectorTrend: DetectorTrend
-  backupTrend: BackupTrend
   aiAnalysis: AiAnalysis
   review?: HumanReview
 }
+
+export interface DetectorMaintenanceEvent extends MaintenanceEventBase {
+  equipmentType: 'detector'
+  detectorTrend: DetectorTrend
+  backupTrend?: never
+}
+
+export interface BackupMaintenanceEvent extends MaintenanceEventBase {
+  equipmentType: 'backup_power'
+  backupTrend: BackupTrend
+  detectorTrend?: never
+}
+
+export type MaintenanceEvent =
+  | DetectorMaintenanceEvent
+  | BackupMaintenanceEvent
 
 export const equipmentTypeLabels: Record<EquipmentType, string> = {
   detector: '探测器',
   backup_power: '备电',
 }
 
-export const riskLevelLabels: Record<RiskLevel, string> = {
+export const healthLevelLabels: Record<HealthLevel, string> = {
   watch: '需关注',
   inspect: '建议检修',
   insufficient_data: '数据不足',

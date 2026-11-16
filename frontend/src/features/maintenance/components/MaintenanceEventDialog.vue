@@ -4,7 +4,7 @@ import { useMaintenanceStore } from '../stores/maintenance'
 import {
   equipmentTypeLabels,
   eventSourceLabels,
-  riskLevelLabels,
+  healthLevelLabels,
   type MaintenanceEvent,
 } from '../types'
 import { formatDateTime } from '../utils'
@@ -63,8 +63,8 @@ onBeforeUnmount(() => {
               <div class="event-dialog__title-line">
                 <h2 id="event-dialog-title">{{ event.eventTitle }}</h2>
                 <div class="event-dialog__badges">
-                  <span class="risk-tag" :data-risk="event.riskLevel">
-                    {{ riskLevelLabels[event.riskLevel] }}
+                  <span class="risk-tag" :data-health-level="event.healthLevel">
+                    {{ healthLevelLabels[event.healthLevel] }}
                   </span>
                   <span class="status-tag" :data-status="event.status">
                     {{
@@ -116,12 +116,12 @@ onBeforeUnmount(() => {
             <section class="analysis-section">
               <div class="data-panels">
                 <BackupDataPanel
-                  class="data-panels__backup"
-                  :event="event"
+                  v-if="event.equipmentType === 'backup_power'"
+                  :trend="event.backupTrend"
                 />
                 <DetectorDataPanel
-                  class="data-panels__detector"
-                  :event="event"
+                  v-else-if="event.equipmentType === 'detector'"
+                  :trend="event.detectorTrend"
                 />
               </div>
             </section>
@@ -309,12 +309,12 @@ onBeforeUnmount(() => {
   line-height: 1.4;
 }
 
-.risk-tag[data-risk="inspect"] {
+.risk-tag[data-health-level="inspect"] {
   background: #fff0e9;
   color: #ad5628;
 }
 
-.risk-tag[data-risk="insufficient_data"] {
+.risk-tag[data-health-level="insufficient_data"] {
   background: #eef2f5;
   color: #5f7283;
 }
@@ -403,8 +403,7 @@ onBeforeUnmount(() => {
 
 .data-panels {
   display: grid;
-  grid-template-columns: minmax(300px, 0.62fr) minmax(0, 1.38fr);
-  gap: 14px;
+  grid-template-columns: minmax(0, 1fr);
   align-items: stretch;
 }
 
@@ -467,12 +466,6 @@ onBeforeUnmount(() => {
 
   .ai-analysis-body {
     flex: none;
-  }
-}
-
-@media (max-width: 1023px) {
-  .data-panels {
-    grid-template-columns: 1fr;
   }
 }
 
