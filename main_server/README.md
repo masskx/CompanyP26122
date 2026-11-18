@@ -1,7 +1,7 @@
 # main_server
 
-`main_server` 是独立的 Go HTTP 服务，为前端提供健康检查、服务信息和小助手聊天
-SSE 代理。它不连接 MQTT、业务数据库，也不提供前端静态文件。
+`main_server` 是独立的 Go HTTP 服务，为前端提供健康检查、服务信息、小助手聊天 SSE
+代理和会话管理代理。它不连接 MQTT、业务数据库，也不提供前端静态文件。
 
 ## 环境要求
 
@@ -30,6 +30,7 @@ Copy-Item config.example.json config.json
   "compute": {
     "base_url": "http://172.16.103.196:8000",
     "chat_path": "/api/v1/chat",
+    "assistant_path": "/api/v1",
     "timeout": "3m",
     "api_key": ""
   }
@@ -44,6 +45,7 @@ Copy-Item config.example.json config.json
 | `shutdown_timeout` | 否 | `10s` | 优雅关闭超时 |
 | `compute.base_url` | 是 | 无 | 算力服 FastAPI 基础地址 |
 | `compute.chat_path` | 否 | `/api/v1/chat` | 算力服聊天接口路径 |
+| `compute.assistant_path` | 否 | 由 `chat_path` 的父路径推导 | 算力服会话管理接口基础路径 |
 | `compute.timeout` | 否 | `3m` | 单次聊天和 SSE 总超时 |
 | `compute.api_key` | 否 | 空 | 发给算力服的 `X-API-Key`；为空时不发送 |
 
@@ -80,6 +82,7 @@ go run . -config D:\mes-config\main-server.json
   "compute": {
     "base_url": "http://172.16.103.196:8000",
     "chat_path": "/api/v1/chat",
+    "assistant_path": "/api/v1",
     "timeout": "3m",
     "api_key": ""
   }
@@ -103,6 +106,12 @@ python scripts/run.py --host 0.0.0.0 --port 8000
 | `GET` | `/readyz` | 服务就绪检查 |
 | `GET` | `/api/v1/system/info` | 服务名称、版本、环境和当前时间 |
 | `POST` | `/api/v1/assistant/chat` | 代理算力服聊天 SSE |
+| `GET` | `/api/v1/assistant/sessions` | 查询会话列表 |
+| `POST` | `/api/v1/assistant/sessions` | 创建会话 |
+| `GET` | `/api/v1/assistant/sessions/{id}` | 查询会话详情 |
+| `PATCH` | `/api/v1/assistant/sessions/{id}` | 重命名会话 |
+| `DELETE` | `/api/v1/assistant/sessions/{id}` | 删除会话 |
+| `GET` | `/api/v1/assistant/sessions/{id}/messages` | 查询历史消息 |
 
 除聊天 SSE 外，响应均为 JSON。所有响应都会返回 `X-Request-ID`。
 
@@ -112,8 +121,13 @@ python scripts/run.py --host 0.0.0.0 --port 8000
 {"message":"你好","session_id":"可选，继续已有会话时填写"}
 ```
 
-响应类型为 `text/event-stream`，事件包括 `session`、`tool`、`delta`、`citation`、
-`done` 和 `error`。
+响应类型为 `text/event-stream`，事件包括 `session`、`stage`、`tool`、`result`、
+`delta`、`citation`、`done` 和 `error`。前端本期仅处理会话、工具、回答增量、引用、
+完成和错误事件。
+
+会话管理请求由 Go 代理到 `compute.assistant_path` 下的对应接口。聊天和会话管理请求不会
+向算力服转发 `X-User-Id`、`X-User-Roles` 或 `X-Client-Id`，算力服统一使用全局
+`anonymous` 会话空间。`compute.api_key` 非空时继续作为服务级 `X-API-Key` 发送。
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8080/healthz
@@ -154,8 +168,10 @@ main_server/
 ├─ config.go            # JSON 配置加载与校验
 ├─ api.go               # 路由、响应和中间件
 ├─ assistant.go         # 聊天 SSE 代理
+├─ conversation.go      # 会话管理 JSON 代理
 ├─ api_test.go          # 配置、路由和中间件测试
 ├─ assistant_test.go    # 聊天代理测试
+├─ conversation_test.go # 会话代理测试
 ├─ config.example.json
 ├─ go.mod
 └─ README.md

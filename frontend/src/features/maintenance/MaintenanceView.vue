@@ -15,10 +15,6 @@ const maintenance = useMaintenanceStore()
     <div class="maintenance-page__inner">
       <header class="maintenance-page__header">
         <h1>设备预测性维护</h1>
-        <p>
-          按报警与运行趋势分析探测器、备电状态，逐条核查 AI
-          结论并保留人工审核记录。
-        </p>
       </header>
 
       <MaintenanceToolbar />
@@ -85,15 +81,6 @@ const maintenance = useMaintenanceStore()
   font-size: clamp(26px, 2.2vw, 28px);
   font-weight: 680;
   letter-spacing: 0.2px;
-}
-
-.maintenance-page__header p {
-  min-width: 0;
-  max-width: 920px;
-  margin: 0;
-  color: #526c80;
-  font-size: 14px;
-  line-height: 1.65;
 }
 
 .maintenance-notice {

@@ -17,13 +17,14 @@ import (
 const requestIDHeader = "X-Request-ID"
 
 type server struct {
-	version     string
-	environment string
-	logger      *slog.Logger
-	computeURL  *url.URL
-	computeKey  string
-	client      *http.Client
-	timeout     time.Duration
+	version             string
+	environment         string
+	logger              *slog.Logger
+	computeURL          *url.URL
+	computeAssistantURL *url.URL
+	computeKey          string
+	client              *http.Client
+	timeout             time.Duration
 }
 
 type errorResponse struct {
@@ -37,13 +38,14 @@ func newServer(cfg config, logger *slog.Logger) *server {
 		logger = slog.Default()
 	}
 	return &server{
-		version:     serviceVersion,
-		environment: cfg.Environment,
-		logger:      logger,
-		computeURL:  cfg.ComputeURL,
-		computeKey:  cfg.ComputeAPIKey,
-		client:      &http.Client{},
-		timeout:     cfg.ComputeTimeout,
+		version:             serviceVersion,
+		environment:         cfg.Environment,
+		logger:              logger,
+		computeURL:          cfg.ComputeURL,
+		computeAssistantURL: cfg.ComputeAssistantURL,
+		computeKey:          cfg.ComputeAPIKey,
+		client:              &http.Client{},
+		timeout:             cfg.ComputeTimeout,
 	}
 }
 
@@ -55,6 +57,7 @@ func (s *server) handler() http.Handler {
 
 	mux.HandleFunc("POST /api/v1/assistant/chat", s.handleAssistantChat)
 	mux.HandleFunc("/api/v1/assistant/chat", methodNotAllowed("POST"))
+	s.registerAssistantSessionRoutes(mux)
 	mux.HandleFunc("/", s.handleNotFound)
 
 	var handler http.Handler = mux

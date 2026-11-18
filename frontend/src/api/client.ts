@@ -31,12 +31,27 @@ function readErrorPayload(payload: unknown): ApiErrorPayload {
     return {}
   }
 
-  const { message, detail, code } = payload as Record<string, unknown>
+  const record = payload as Record<string, unknown>
+  const detail = record.detail
+  const detailRecord =
+    typeof detail === 'object' && detail !== null
+      ? (detail as Record<string, unknown>)
+      : null
 
   return {
-    message: typeof message === 'string' ? message : undefined,
+    message:
+      typeof record.message === 'string'
+        ? record.message
+        : typeof detailRecord?.message === 'string'
+          ? detailRecord.message
+          : undefined,
     detail: typeof detail === 'string' ? detail : undefined,
-    code: typeof code === 'string' ? code : undefined,
+    code:
+      typeof record.code === 'string'
+        ? record.code
+        : typeof detailRecord?.code === 'string'
+          ? detailRecord.code
+          : undefined,
   }
 }
 

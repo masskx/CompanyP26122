@@ -6,6 +6,7 @@
   "compute": {
     "base_url": "http://127.0.0.1:8000",
     "chat_path": "/api/v1/chat",
+    "assistant_path": "/api/v1",
     "timeout": "3m",
     "api_key": ""
   }

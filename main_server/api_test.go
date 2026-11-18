@@ -33,6 +33,9 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if got := cfg.ComputeURL.String(); got != "https://compute.example.test:9443/api/v1/chat" {
 		t.Errorf("ComputeURL = %q, want default chat path", got)
 	}
+	if got := cfg.ComputeAssistantURL.String(); got != "https://compute.example.test:9443/api/v1" {
+		t.Errorf("ComputeAssistantURL = %q, want derived assistant path", got)
+	}
 	if cfg.ComputeTimeout != 3*time.Minute {
 		t.Errorf("ComputeTimeout = %v, want 3m", cfg.ComputeTimeout)
 	}
@@ -69,6 +72,9 @@ func TestLoadConfigOverrides(t *testing.T) {
 	}
 	if got := cfg.ComputeURL.String(); got != "https://compute.example.test:9443/base/internal/v1/assistant/chat" {
 		t.Errorf("ComputeURL = %q, want configured chat path", got)
+	}
+	if got := cfg.ComputeAssistantURL.String(); got != "https://compute.example.test:9443/base/internal/v1/assistant" {
+		t.Errorf("ComputeAssistantURL = %q, want derived assistant path", got)
 	}
 	if cfg.ComputeTimeout != 45*time.Second {
 		t.Errorf("ComputeTimeout = %v, want 45s", cfg.ComputeTimeout)
@@ -158,6 +164,39 @@ func TestLoadConfigRejectsInvalidChatPath(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "compute.chat_path") {
 				t.Errorf("error = %q, want it to mention compute.chat_path", err)
+			}
+		})
+	}
+}
+
+func TestLoadConfigUsesConfiguredAssistantPath(t *testing.T) {
+	cfg := loadConfigFromJSON(t, `{
+		"compute":{
+			"base_url":"http://127.0.0.1:8000",
+			"chat_path":"/custom/chat",
+			"assistant_path":"/custom/assistant"
+		}
+	}`)
+
+	if got := cfg.ComputeAssistantURL.String(); got !=
+		"http://127.0.0.1:8000/custom/assistant" {
+		t.Errorf("ComputeAssistantURL = %q, want configured assistant path", got)
+	}
+}
+
+func TestLoadConfigRejectsInvalidAssistantPath(t *testing.T) {
+	for _, value := range []string{"api/v1", "http://compute/api", "/api?x=1", "/api#x"} {
+		t.Run(value, func(t *testing.T) {
+			body := fmt.Sprintf(
+				`{"compute":{"base_url":"http://127.0.0.1:8000","assistant_path":%q}}`,
+				value,
+			)
+			_, err := loadConfigFromText(t, body)
+			if err == nil {
+				t.Fatalf("loadConfig() error = nil for assistant path %q", value)
+			}
+			if !strings.Contains(err.Error(), "compute.assistant_path") {
+				t.Errorf("error = %q, want it to mention compute.assistant_path", err)
 			}
 		})
 	}
@@ -368,13 +407,23 @@ func testConfig(t *testing.T) config {
 		t.Fatalf("parse test compute URL: %v", err)
 	}
 	return config{
-		Addr:            defaultAddr,
-		Environment:     "development",
-		LogLevel:        slog.LevelDebug,
-		ShutdownTimeout: time.Second,
-		ComputeURL:      computeURL,
-		ComputeTimeout:  time.Second,
+		Addr:                defaultAddr,
+		Environment:         "development",
+		LogLevel:            slog.LevelDebug,
+		ShutdownTimeout:     time.Second,
+		ComputeURL:          computeURL,
+		ComputeAssistantURL: mustParseURL(t, "http://127.0.0.1:1/api/v1"),
+		ComputeTimeout:      time.Second,
 	}
+}
+
+func mustParseURL(t *testing.T, value string) *url.URL {
+	t.Helper()
+	parsed, err := url.Parse(value)
+	if err != nil {
+		t.Fatalf("parse URL %q: %v", value, err)
+	}
+	return parsed
 }
 
 func discardLogger() *slog.Logger {

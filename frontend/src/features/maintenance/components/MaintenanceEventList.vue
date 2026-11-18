@@ -89,13 +89,6 @@ function setPage(page: number) {
     <header class="event-list__header">
       <div>
         <h2 id="event-list-title">{{ listTitle }}</h2>
-        <p>
-          {{
-            maintenance.activeTab === 'pending'
-              ? 'AI 分析结果供人工审核，审核后进入归档记录'
-              : '保留人工审核结论、意见和审核时间'
-          }}
-        </p>
       </div>
       <span aria-live="polite">共 {{ maintenance.filteredEvents.length }} 条</span>
     </header>
@@ -345,13 +338,6 @@ function setPage(page: number) {
   border-radius: 2px;
   background: var(--event-accent);
   content: "";
-}
-
-.event-list__header p {
-  margin: 6px 0 0 13px;
-  color: #5f7487;
-  font-size: 12px;
-  line-height: 1.55;
 }
 
 .event-list__header > span {

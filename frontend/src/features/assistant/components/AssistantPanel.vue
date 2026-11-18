@@ -9,14 +9,20 @@ import {
 import { renderMarkdown } from '../markdown'
 import { ASSISTANT_PROMPTS } from '../prompts'
 import { useAssistantStore } from '../stores/assistant'
-import type { AssistantCitation } from '../types'
+import type { AssistantCitation, AssistantSession } from '../types'
 
 const assistant = useAssistantStore()
 const composer = ref<HTMLTextAreaElement | null>(null)
 const messageList = ref<HTMLElement | null>(null)
 const panel = ref<HTMLElement | null>(null)
 const historyPanel = ref<HTMLElement | null>(null)
+const deleteDialog = ref<HTMLElement | null>(null)
 const historyDrawerOpen = ref(false)
+const editingSessionId = ref<string | null>(null)
+const renameDraft = ref('')
+const renameSaving = ref(false)
+const deleteCandidate = ref<AssistantSession | null>(null)
+const deleteSaving = ref(false)
 let previousBodyOverflow = ''
 
 const focusableSelector = [
@@ -27,17 +33,6 @@ const focusableSelector = [
   'a[href]',
   '[tabindex]:not([tabindex="-1"])',
 ].join(',')
-
-function formatTime(value: string): string {
-  return new Date(value).toLocaleTimeString('zh-CN', {
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
-
-function formatElapsed(value?: number): string {
-  return value === undefined ? '—' : value.toFixed(1)
-}
 
 function formatCitationMeta(citation: AssistantCitation): string {
   return [citation.source, citation.section, citation.version]
@@ -86,11 +81,65 @@ async function startNewConversation() {
 }
 
 async function selectSession(sessionId: string) {
-  assistant.selectSession(sessionId)
+  await assistant.selectSession(sessionId)
   historyDrawerOpen.value = false
   await nextTick()
   scrollToLatest(false)
   composer.value?.focus()
+}
+
+async function beginRename(session: AssistantSession) {
+  editingSessionId.value = session.id
+  renameDraft.value = session.title
+  await nextTick()
+  const input =
+    historyPanel.value?.querySelector<HTMLInputElement>(
+      '.assistant-history__rename input',
+    )
+  input?.focus()
+  input?.select()
+}
+
+function cancelRename() {
+  editingSessionId.value = null
+  renameDraft.value = ''
+  renameSaving.value = false
+}
+
+async function saveRename() {
+  const sessionId = editingSessionId.value
+  if (!sessionId || renameSaving.value) {
+    return
+  }
+  renameSaving.value = true
+  const saved = await assistant.renameSession(sessionId, renameDraft.value)
+  renameSaving.value = false
+  if (saved || !assistant.sessions.some((session) => session.id === sessionId)) {
+    cancelRename()
+  }
+}
+
+async function requestDelete(session: AssistantSession) {
+  deleteCandidate.value = session
+  await nextTick()
+  deleteDialog.value?.querySelector<HTMLElement>('button')?.focus()
+}
+
+async function confirmDelete() {
+  const session = deleteCandidate.value
+  if (!session || deleteSaving.value) {
+    return
+  }
+  deleteSaving.value = true
+  const deleted = await assistant.deleteSession(session.id)
+  deleteSaving.value = false
+  if (deleted) {
+    deleteCandidate.value = null
+    historyDrawerOpen.value = false
+    await nextTick()
+    scrollToLatest(false)
+    composer.value?.focus()
+  }
 }
 
 async function toggleHistoryDrawer() {
@@ -116,12 +165,13 @@ function handleComposerKeydown(event: KeyboardEvent) {
 }
 
 function getFocusableElements(): HTMLElement[] {
-  if (!panel.value) {
+  const root = deleteCandidate.value ? deleteDialog.value : panel.value
+  if (!root) {
     return []
   }
 
   return Array.from(
-    panel.value.querySelectorAll<HTMLElement>(focusableSelector),
+    root.querySelectorAll<HTMLElement>(focusableSelector),
   ).filter((element) => element.offsetParent !== null)
 }
 
@@ -132,6 +182,16 @@ function handleWindowKeydown(event: KeyboardEvent) {
 
   if (event.key === 'Escape') {
     event.preventDefault()
+
+    if (deleteCandidate.value) {
+      deleteCandidate.value = null
+      return
+    }
+
+    if (editingSessionId.value) {
+      cancelRename()
+      return
+    }
 
     if (historyDrawerOpen.value) {
       historyDrawerOpen.value = false
@@ -265,39 +325,133 @@ onBeforeUnmount(() => {
             <small class="assistant-history-label">最近对话</small>
 
             <div class="assistant-history">
-              <p v-if="assistant.sessions.length === 0">
-                你的对话将显示在这里
+              <p v-if="assistant.isLoadingSessions && assistant.sessions.length === 0">
+                正在加载对话…
               </p>
-              <button
+              <p
+                v-else-if="
+                  assistant.sessionError && assistant.sessions.length === 0
+                "
+                class="assistant-history__error"
+              >
+                {{ assistant.sessionError }}
+                <button type="button" @click="assistant.loadSessions(true)">
+                  重试
+                </button>
+              </p>
+              <p v-else-if="assistant.sessions.length === 0">
+                暂无历史对话
+              </p>
+              <div
                 v-for="session in assistant.sessions"
                 v-else
                 :key="session.id"
-                type="button"
-                class="assistant-history__item"
-                :class="{
-                  'assistant-history__item--active':
-                    session.id === assistant.activeSessionId,
-                }"
-                :aria-current="
-                  session.id === assistant.activeSessionId ? 'true' : undefined
-                "
-                @click="selectSession(session.id)"
+                class="assistant-history__row"
               >
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                  <path
-                    d="M6.5 4.5H15.5L19 8V19.5H6.5V4.5Z"
-                    stroke="currentColor"
-                    stroke-width="1.5"
-                    stroke-linejoin="round"
+                <form
+                  v-if="editingSessionId === session.id"
+                  class="assistant-history__rename"
+                  @submit.prevent="saveRename"
+                  @keydown.esc.prevent="cancelRename"
+                >
+                  <input
+                    v-model="renameDraft"
+                    type="text"
+                    maxlength="200"
+                    aria-label="会话名称"
+                    :disabled="renameSaving"
                   />
-                  <path
-                    d="M15.3 4.7V8.3H19M9.5 12H16M9.5 15.5H14"
-                    stroke="currentColor"
-                    stroke-width="1.5"
-                    stroke-linecap="round"
-                  />
-                </svg>
-                <span>{{ session.title }}</span>
+                  <button type="submit" :disabled="renameSaving">
+                    {{ renameSaving ? '保存中' : '保存' }}
+                  </button>
+                  <button type="button" :disabled="renameSaving" @click="cancelRename">
+                    取消
+                  </button>
+                </form>
+                <template v-else>
+                  <button
+                    type="button"
+                    class="assistant-history__item"
+                    :class="{
+                      'assistant-history__item--active':
+                        session.id === assistant.activeSessionId,
+                    }"
+                    :aria-current="
+                      session.id === assistant.activeSessionId
+                        ? 'true'
+                        : undefined
+                    "
+                    @click="selectSession(session.id)"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <path
+                        d="M6.5 4.5H15.5L19 8V19.5H6.5V4.5Z"
+                        stroke="currentColor"
+                        stroke-width="1.5"
+                        stroke-linejoin="round"
+                      />
+                      <path
+                        d="M15.3 4.7V8.3H19M9.5 12H16M9.5 15.5H14"
+                        stroke="currentColor"
+                        stroke-width="1.5"
+                        stroke-linecap="round"
+                      />
+                    </svg>
+                    <span>
+                      <b>{{ session.title }}</b>
+                    </span>
+                  </button>
+                  <div class="assistant-history__actions">
+                    <button
+                      v-if="!session.isDraft"
+                      type="button"
+                      aria-label="重命名会话"
+                      title="重命名"
+                      @click="beginRename(session)"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path
+                          d="M5 16.8V19H7.2L16.8 9.4L14.6 7.2L5 16.8Z"
+                          stroke="currentColor"
+                          stroke-width="1.5"
+                          stroke-linejoin="round"
+                        />
+                        <path
+                          d="M13.4 8.4L15.6 10.6"
+                          stroke="currentColor"
+                          stroke-width="1.5"
+                        />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="删除会话"
+                      title="删除"
+                      @click="requestDelete(session)"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path
+                          d="M7 8H17M9 8V6H15V8M9 11V17M12 11V17M15 11V17M8 8L9 19H15L16 8"
+                          stroke="currentColor"
+                          stroke-width="1.5"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        />
+                      </svg>
+                    </button>
+                  </div>
+                </template>
+              </div>
+              <button
+                v-if="assistant.sessionHasMore"
+                type="button"
+                class="assistant-history__more"
+                :disabled="assistant.isLoadingMoreSessions"
+                @click="assistant.loadMoreSessions()"
+              >
+                {{
+                  assistant.isLoadingMoreSessions ? '加载中…' : '加载更多对话'
+                }}
               </button>
             </div>
 
@@ -316,12 +470,43 @@ onBeforeUnmount(() => {
                   stroke-linejoin="round"
                 />
               </svg>
-              <div>
-                MES 系统知识库
-                <small>维护资料 · 运行知识</small>
-              </div>
+              <div>MES 系统知识库</div>
             </div>
           </aside>
+
+          <div
+            v-if="deleteCandidate"
+            class="assistant-confirm-scrim"
+            @mousedown.self="deleteCandidate = null"
+          >
+            <section
+              ref="deleteDialog"
+              class="assistant-confirm"
+              role="alertdialog"
+              aria-modal="true"
+              aria-labelledby="assistant-delete-title"
+            >
+              <h3 id="assistant-delete-title">删除这条对话？</h3>
+              <p>“{{ deleteCandidate.title }}”及其历史消息将从会话列表中移除。</p>
+              <div>
+                <button
+                  type="button"
+                  :disabled="deleteSaving"
+                  @click="deleteCandidate = null"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  class="danger"
+                  :disabled="deleteSaving"
+                  @click="confirmDelete"
+                >
+                  {{ deleteSaving ? '删除中…' : '删除' }}
+                </button>
+              </div>
+            </section>
+          </div>
 
           <div class="assistant-main">
             <header class="assistant-main__header">
@@ -373,7 +558,26 @@ onBeforeUnmount(() => {
 
             <div ref="messageList" class="assistant-content">
               <div
-                v-if="assistant.messages.length === 0"
+                v-if="assistant.sessionError"
+                class="assistant-session-notice"
+                role="status"
+              >
+                <span>{{ assistant.sessionError }}</span>
+                <button type="button" @click="assistant.clearSessionError()">
+                  关闭
+                </button>
+              </div>
+              <div
+                v-if="assistant.currentSession && assistant.isLoadingMessages"
+                class="assistant-message-loading"
+              >
+                正在加载历史消息…
+              </div>
+              <div
+                v-if="
+                  assistant.messages.length === 0 &&
+                  !assistant.isLoadingMessages
+                "
                 class="assistant-welcome"
               >
                 <span class="assistant-welcome__icon" aria-hidden="true">
@@ -506,6 +710,19 @@ onBeforeUnmount(() => {
               </div>
 
               <div v-else class="assistant-conversation">
+                <button
+                  v-if="assistant.currentSession?.hasMoreMessages"
+                  type="button"
+                  class="assistant-load-older"
+                  :disabled="assistant.isLoadingMoreMessages"
+                  @click="assistant.loadMoreMessages()"
+                >
+                  {{
+                    assistant.isLoadingMoreMessages
+                      ? '正在加载更早消息…'
+                      : '加载更早消息'
+                  }}
+                </button>
                 <template
                   v-for="message in assistant.messages"
                   :key="message.id"
@@ -535,9 +752,6 @@ onBeforeUnmount(() => {
                     </span>
                     <div class="assistant-user-message__body">
                       <p>{{ message.content }}</p>
-                      <time :datetime="message.createdAt">
-                        {{ formatTime(message.createdAt) }}
-                      </time>
                     </div>
                   </article>
 
@@ -561,10 +775,8 @@ onBeforeUnmount(() => {
                         </span>
                         <span>
                           <b>正在分析</b>
-                          <small>连接算力服务并整理可核查的回答依据</small>
                         </span>
                       </span>
-                      <span class="assistant-progress__label">执行记录</span>
                     </header>
 
                     <ol>
@@ -607,9 +819,6 @@ onBeforeUnmount(() => {
                       v-html="renderMarkdown(message.content)"
                     ></div>
 
-                    <p>
-                      仅展示面向用户的执行摘要，不展示模型隐式思维过程。
-                    </p>
                   </article>
 
                   <article
@@ -670,10 +879,7 @@ onBeforeUnmount(() => {
                     :data-message-id="message.id"
                     :data-request-id="message.requestId"
                   >
-                    <div
-                      class="assistant-answer__identity"
-                      :title="`MES 助手 · 用时 ${formatElapsed(message.elapsedSeconds)} 秒`"
-                    >
+                    <div class="assistant-answer__identity">
                       <span class="assistant-answer__avatar" aria-hidden="true">
                         <svg viewBox="0 0 24 24" fill="none">
                           <rect
@@ -693,9 +899,6 @@ onBeforeUnmount(() => {
                           />
                         </svg>
                       </span>
-                      <div class="assistant-answer__meta">
-                        <b>MES 助手</b>
-                      </div>
                     </div>
 
                     <div class="assistant-answer__body">
@@ -725,30 +928,10 @@ onBeforeUnmount(() => {
                             <small v-if="formatCitationMeta(citation)">
                               {{ formatCitationMeta(citation) }}
                             </small>
-                            <p v-if="citation.excerpt">{{ citation.excerpt }}</p>
                           </div>
                         </li>
                       </ul>
                     </section>
-
-                    <div class="assistant-answer__elapsed">
-                      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                        <circle
-                          cx="12"
-                          cy="12"
-                          r="8"
-                          stroke="currentColor"
-                          stroke-width="1.5"
-                        />
-                        <path
-                          d="M12 7.5V12L15 14"
-                          stroke="currentColor"
-                          stroke-width="1.5"
-                          stroke-linecap="round"
-                        />
-                      </svg>
-                      用时 {{ formatElapsed(message.elapsedSeconds) }} 秒
-                    </div>
                     </div>
 
                   </article>
@@ -770,7 +953,6 @@ onBeforeUnmount(() => {
                   ></textarea>
                 </label>
                 <div class="assistant-compose__footer">
-                  <span>Enter 发送 · Shift + Enter 换行</span>
                   <button
                     type="submit"
                     :disabled="!assistant.canSend"
@@ -911,13 +1093,41 @@ onBeforeUnmount(() => {
   line-height: 1.7;
 }
 
+.assistant-history > p button {
+  margin-left: 8px;
+  padding: 2px 6px;
+  border: 0;
+  background: transparent;
+  color: #176fc5;
+  font-size: 12px;
+}
+
+.assistant-history__error {
+  color: #985858 !important;
+}
+
+.assistant-history__row {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 5px;
+  border-radius: 6px;
+}
+
+.assistant-history__row:hover,
+.assistant-history__row:focus-within {
+  background: #eaf1f8;
+}
+
 .assistant-history__item {
   display: flex;
   width: 100%;
+  min-width: 0;
   align-items: center;
   justify-content: flex-start;
   gap: 8px;
-  margin-bottom: 5px;
   padding: 11px 10px;
   border: 0;
   border-radius: 6px;
@@ -928,7 +1138,7 @@ onBeforeUnmount(() => {
 }
 
 .assistant-history__item:hover {
-  background: #eaf1f8;
+  background: transparent;
 }
 
 .assistant-history__item--active {
@@ -943,9 +1153,108 @@ onBeforeUnmount(() => {
 }
 
 .assistant-history__item span {
+  display: grid;
+  min-width: 0;
+  overflow: hidden;
+  gap: 4px;
+}
+
+.assistant-history__item b {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.assistant-history__item b {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.assistant-history__actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding-right: 4px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.assistant-history__row:hover .assistant-history__actions,
+.assistant-history__row:focus-within .assistant-history__actions {
+  opacity: 1;
+}
+
+.assistant-history__actions button {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #6f8498;
+}
+
+.assistant-history__actions button:hover {
+  background: #dfe9f3;
+  color: #245f91;
+}
+
+.assistant-history__actions svg {
+  width: 15px;
+  height: 15px;
+}
+
+.assistant-history__rename {
+  display: grid;
+  min-width: 0;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 5px;
+  padding: 7px;
+  border-radius: 6px;
+  background: #e8f0f8;
+}
+
+.assistant-history__rename input {
+  min-width: 0;
+  padding: 6px 7px;
+  border: 1px solid #b8cee1;
+  border-radius: 5px;
+  outline: 0;
+  color: #35536d;
+  font-size: 12px;
+}
+
+.assistant-history__rename input:focus {
+  border-color: #5f94c3;
+  box-shadow: 0 0 0 2px #d6e8f7;
+}
+
+.assistant-history__rename button,
+.assistant-history__more {
+  border: 0;
+  border-radius: 5px;
+  background: #fff;
+  color: #3e6d93;
+  font-size: 11px;
+}
+
+.assistant-history__rename button {
+  padding: 0 7px;
+}
+
+.assistant-history__more {
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px;
+  background: #e9f0f7;
+}
+
+.assistant-history__rename button:disabled,
+.assistant-history__more:disabled {
+  opacity: 0.6;
 }
 
 .assistant-knowledge {
@@ -966,16 +1275,65 @@ onBeforeUnmount(() => {
   color: #637e97;
 }
 
-.assistant-knowledge small {
-  display: block;
-  margin-top: 5px;
-  color: #8092a3;
-  font-size: 11px;
-}
-
 .assistant-history-scrim {
   display: none;
   border: 0;
+}
+
+.assistant-confirm-scrim {
+  position: absolute;
+  z-index: 6;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(20 42 62 / 24%);
+}
+
+.assistant-confirm {
+  width: min(390px, 100%);
+  padding: 24px;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 18px 48px rgb(16 40 62 / 22%);
+}
+
+.assistant-confirm h3 {
+  margin: 0;
+  color: #28465e;
+  font-size: 18px;
+}
+
+.assistant-confirm p {
+  margin: 12px 0 22px;
+  color: #6f8395;
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+.assistant-confirm > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+}
+
+.assistant-confirm button {
+  padding: 8px 16px;
+  border: 1px solid #d6e1ea;
+  border-radius: 7px;
+  background: #fff;
+  color: #4c667d;
+  font-size: 13px;
+}
+
+.assistant-confirm button.danger {
+  border-color: #bc5b5b;
+  background: #b85252;
+  color: #fff;
+}
+
+.assistant-confirm button:disabled {
+  opacity: 0.6;
 }
 
 .assistant-main {
@@ -1067,6 +1425,51 @@ onBeforeUnmount(() => {
   padding: 28px 44px 30px;
   scrollbar-color: #bdcbd8 transparent;
   scrollbar-width: thin;
+}
+
+.assistant-session-notice {
+  display: flex;
+  max-width: 820px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 auto 18px;
+  padding: 10px 13px;
+  border: 1px solid #eed5d5;
+  border-radius: 7px;
+  background: #fff8f8;
+  color: #8a5353;
+  font-size: 12px;
+}
+
+.assistant-session-notice button {
+  border: 0;
+  background: transparent;
+  color: #885454;
+  font-size: 12px;
+}
+
+.assistant-message-loading {
+  max-width: 820px;
+  margin: 34px auto;
+  color: #8294a5;
+  font-size: 13px;
+  text-align: center;
+}
+
+.assistant-load-older {
+  display: block;
+  margin: 0 auto 22px;
+  padding: 7px 14px;
+  border: 1px solid #dbe6ef;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #5b7891;
+  font-size: 12px;
+}
+
+.assistant-load-older:disabled {
+  opacity: 0.6;
 }
 
 .assistant-welcome {
@@ -1228,14 +1631,6 @@ onBeforeUnmount(() => {
   word-break: break-word;
 }
 
-.assistant-user-message__body time {
-  display: block;
-  margin-top: 6px;
-  color: #9aa9b6;
-  font-size: 10px;
-  text-align: right;
-}
-
 .assistant-progress {
   max-width: 720px;
   margin: 4px auto 28px;
@@ -1255,24 +1650,9 @@ onBeforeUnmount(() => {
   gap: 11px;
 }
 
-.assistant-progress__title > span:last-child {
-  display: grid;
-  gap: 5px;
-}
-
 .assistant-progress__title b {
   font-size: 16px;
   font-weight: 650;
-}
-
-.assistant-progress__title small {
-  color: #8294a5;
-  font-size: 12px;
-}
-
-.assistant-progress__label {
-  color: #8495a6;
-  font-size: 12px;
 }
 
 .assistant-spinner {
@@ -1369,13 +1749,6 @@ onBeforeUnmount(() => {
   color: #4c7566;
 }
 
-.assistant-progress > p {
-  margin: 3px 0 0 11px;
-  color: #8495a6;
-  font-size: 12px;
-  line-height: 1.8;
-}
-
 .assistant-cancelled {
   display: flex;
   align-items: center;
@@ -1450,11 +1823,10 @@ onBeforeUnmount(() => {
 
 .assistant-answer__identity {
   display: flex;
-  width: 68px;
+  width: 30px;
   flex: none;
   flex-direction: column;
   align-items: center;
-  gap: 5px;
   text-align: center;
 }
 
@@ -1471,37 +1843,6 @@ onBeforeUnmount(() => {
 .assistant-answer__avatar svg {
   width: 21px;
   height: 21px;
-}
-
-.assistant-answer__meta {
-  display: grid;
-  width: 100%;
-  justify-items: center;
-}
-
-.assistant-answer__meta b {
-  color: #4a6f91;
-  font-size: 11px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.assistant-answer__elapsed {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 4px;
-  margin-top: 10px;
-  color: #98a7b5;
-  font-size: 10px;
-  line-height: 1.5;
-}
-
-.assistant-answer__elapsed svg {
-  width: 12px;
-  height: 12px;
-  flex: none;
-  color: #91a2b1;
 }
 
 .assistant-answer__body {
@@ -1668,7 +2009,7 @@ onBeforeUnmount(() => {
   border-radius: 5px;
   background: #e5eef7;
   color: #47749b;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 650;
 }
 
@@ -1679,7 +2020,7 @@ onBeforeUnmount(() => {
 .assistant-citations b {
   display: block;
   color: #3a5b75;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
 }
 
@@ -1687,15 +2028,8 @@ onBeforeUnmount(() => {
   display: block;
   margin-top: 5px;
   color: #8a9aa9;
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.6;
-}
-
-.assistant-citations p {
-  margin: 7px 0 0;
-  color: #73879a;
-  font-size: 11px;
-  line-height: 1.7;
 }
 
 .assistant-compose {
@@ -1742,7 +2076,7 @@ onBeforeUnmount(() => {
 .assistant-compose__footer {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 14px;
   color: #8b9aa9;
   font-size: 12px;
@@ -1782,7 +2116,7 @@ onBeforeUnmount(() => {
   display: block;
   margin-top: 11px;
   color: #8b9aa9;
-  font-size: 11px;
+  font-size: 12px;
   text-align: center;
 }
 
@@ -1924,8 +2258,7 @@ onBeforeUnmount(() => {
   }
 
   .assistant-answer__identity {
-    width: 64px;
-    gap: 4px;
+    width: 28px;
   }
 
   .assistant-answer__avatar {
@@ -1936,19 +2269,6 @@ onBeforeUnmount(() => {
   .assistant-answer__avatar svg {
     width: 20px;
     height: 20px;
-  }
-
-  .assistant-answer__meta {
-    gap: 0;
-  }
-
-  .assistant-answer__meta b {
-    font-size: 10px;
-  }
-
-  .assistant-answer__elapsed {
-    margin-top: 13px;
-    font-size: 9px;
   }
 
   .assistant-answer__content h1 {

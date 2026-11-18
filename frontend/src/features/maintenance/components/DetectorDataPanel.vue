@@ -238,7 +238,6 @@ const chartOption = computed<EChartsCoreOption>(() => ({
     <header class="data-panel__heading">
       <div>
         <h3 id="detector-data-title">电离室 · 剂量率与雨量</h3>
-        <p>离散采样 · 缺测不补零、不连线</p>
       </div>
     </header>
 
@@ -265,7 +264,6 @@ const chartOption = computed<EChartsCoreOption>(() => ({
           {{ period.label }}
         </button>
       </div>
-      <span>{{ activePeriodMeta.range }}</span>
     </div>
 
     <div
@@ -328,17 +326,9 @@ const chartOption = computed<EChartsCoreOption>(() => ({
   line-height: 1.45;
 }
 
-.data-panel__heading p {
-  margin: 0;
-  color: #5f7487;
-  font-size: 12px;
-  line-height: 1.55;
-}
-
 .period-controls {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 16px;
   margin-top: 12px;
 }
@@ -348,12 +338,6 @@ const chartOption = computed<EChartsCoreOption>(() => ({
   min-height: 0;
   flex: 1;
   flex-direction: column;
-}
-
-.period-controls > span {
-  color: #60788b;
-  font-size: 12px;
-  white-space: nowrap;
 }
 
 .period-switch {

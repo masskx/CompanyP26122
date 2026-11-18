@@ -92,6 +92,19 @@ describe('parseAssistantEvent', () => {
     })
   })
 
+  it('keeps the stored user message id from the session event', () => {
+    const event = parseAssistantEvent({
+      event: 'session',
+      data: '{"session_id":"s_1","user_message_id":"m_user"}',
+    })
+
+    expect(event).toEqual({
+      type: 'session',
+      sessionId: 's_1',
+      userMessageId: 'm_user',
+    })
+  })
+
   it('throws a typed error for malformed events and error events', () => {
     expect(() =>
       parseAssistantEvent({ event: 'delta', data: '{' }),
@@ -110,6 +123,8 @@ describe('streamAssistantChat', () => {
   it('posts the message and remote session, then emits typed events', async () => {
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
       expect(new Headers(init?.headers).get('X-Request-ID')).toBe('turn-test')
+      expect(new Headers(init?.headers).get('X-User-Id')).toBeNull()
+      expect(new Headers(init?.headers).get('X-Client-Id')).toBeNull()
       expect(JSON.parse(String(init?.body))).toEqual({
         message: '继续回答',
         session_id: 's_existing',

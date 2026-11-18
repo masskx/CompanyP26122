@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path"
 	"strings"
 	"testing"
 	"time"
@@ -23,8 +24,14 @@ func TestAssistantChatProxiesSSE(t *testing.T) {
 		if value := r.Header.Get(requestIDHeader); value != "client-request" {
 			t.Errorf("upstream X-Request-ID = %q, want client-request", value)
 		}
-		if value := r.Header.Get("X-User-Id"); value != "alice" {
-			t.Errorf("upstream X-User-Id = %q, want alice", value)
+		if value := r.Header.Get("X-User-Id"); value != "" {
+			t.Errorf("upstream X-User-Id = %q, want empty", value)
+		}
+		if value := r.Header.Get("X-User-Roles"); value != "" {
+			t.Errorf("upstream X-User-Roles = %q, want empty", value)
+		}
+		if value := r.Header.Get("X-Client-Id"); value != "" {
+			t.Errorf("upstream X-Client-Id = %q, want empty", value)
 		}
 		if value := r.Header.Get("X-API-Key"); value != "server-key" {
 			t.Errorf("upstream X-API-Key = %q, want server-key", value)
@@ -65,6 +72,8 @@ func TestAssistantChatProxiesSSE(t *testing.T) {
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Request-ID", "client-request")
 	request.Header.Set("X-User-Id", "alice")
+	request.Header.Set("X-User-Roles", "admin")
+	request.Header.Set("X-Client-Id", "browser-a")
 	request.Header.Set("X-API-Key", "browser-key-must-not-win")
 	recorder := httptest.NewRecorder()
 
@@ -334,12 +343,13 @@ func newAssistantTestHandler(
 		t.Fatalf("parse test compute URL: %v", err)
 	}
 	cfg := config{
-		Addr:            defaultAddr,
-		Environment:     "test",
-		ComputeURL:      base.JoinPath(strings.TrimPrefix(chatPath, "/")),
-		ComputeTimeout:  timeout,
-		ComputeAPIKey:   apiKey,
-		ShutdownTimeout: time.Second,
+		Addr:                defaultAddr,
+		Environment:         "test",
+		ComputeURL:          base.JoinPath(strings.TrimPrefix(chatPath, "/")),
+		ComputeAssistantURL: base.JoinPath(strings.TrimPrefix(path.Dir(chatPath), "/")),
+		ComputeTimeout:      timeout,
+		ComputeAPIKey:       apiKey,
+		ShutdownTimeout:     time.Second,
 	}
 	return newServer(cfg, discardLogger()).handler()
 }

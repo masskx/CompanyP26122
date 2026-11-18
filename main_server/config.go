@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	pathpkg "path"
 	"strings"
 	"time"
 )
@@ -22,13 +23,14 @@ const (
 )
 
 type config struct {
-	Addr            string
-	Environment     string
-	LogLevel        slog.Level
-	ShutdownTimeout time.Duration
-	ComputeURL      *url.URL
-	ComputeTimeout  time.Duration
-	ComputeAPIKey   string
+	Addr                string
+	Environment         string
+	LogLevel            slog.Level
+	ShutdownTimeout     time.Duration
+	ComputeURL          *url.URL
+	ComputeAssistantURL *url.URL
+	ComputeTimeout      time.Duration
+	ComputeAPIKey       string
 }
 
 type fileConfig struct {
@@ -40,10 +42,11 @@ type fileConfig struct {
 }
 
 type computeFileConfig struct {
-	BaseURL  string `json:"base_url"`
-	ChatPath string `json:"chat_path"`
-	Timeout  string `json:"timeout"`
-	APIKey   string `json:"api_key"`
+	BaseURL       string `json:"base_url"`
+	ChatPath      string `json:"chat_path"`
+	AssistantPath string `json:"assistant_path"`
+	Timeout       string `json:"timeout"`
+	APIKey        string `json:"api_key"`
 }
 
 func loadConfig(path string) (config, error) {
@@ -113,6 +116,14 @@ func loadConfig(path string) (config, error) {
 	if err != nil {
 		return config{}, err
 	}
+	assistantPath := strings.TrimSpace(raw.Compute.AssistantPath)
+	if assistantPath == "" {
+		assistantPath = pathpkg.Dir(chatPath)
+	}
+	assistantPath, err = parseComputePath("compute.assistant_path", assistantPath)
+	if err != nil {
+		return config{}, err
+	}
 	computeTimeout, err := parseConfigDuration(
 		"compute.timeout",
 		raw.Compute.Timeout,
@@ -123,13 +134,14 @@ func loadConfig(path string) (config, error) {
 	}
 
 	return config{
-		Addr:            listenAddr,
-		Environment:     environment,
-		LogLevel:        level,
-		ShutdownTimeout: shutdownTimeout,
-		ComputeURL:      baseURL.JoinPath(strings.TrimPrefix(chatPath, "/")),
-		ComputeTimeout:  computeTimeout,
-		ComputeAPIKey:   strings.TrimSpace(raw.Compute.APIKey),
+		Addr:                listenAddr,
+		Environment:         environment,
+		LogLevel:            level,
+		ShutdownTimeout:     shutdownTimeout,
+		ComputeURL:          baseURL.JoinPath(strings.TrimPrefix(chatPath, "/")),
+		ComputeAssistantURL: baseURL.JoinPath(strings.TrimPrefix(assistantPath, "/")),
+		ComputeTimeout:      computeTimeout,
+		ComputeAPIKey:       strings.TrimSpace(raw.Compute.APIKey),
 	}, nil
 }
 
@@ -174,23 +186,30 @@ func parseComputeBaseURL(value string) (*url.URL, error) {
 }
 
 func parseComputeChatPath(value string) (string, error) {
+	return parseComputePath("compute.chat_path", value)
+}
+
+func parseComputePath(field, value string) (string, error) {
 	text := strings.TrimSpace(value)
-	if text == "" {
+	if text == "" && field == "compute.chat_path" {
 		text = defaultComputeChatPath
 	}
+	if text == "" {
+		return "", fmt.Errorf("%s must be provided", field)
+	}
 	if !strings.HasPrefix(text, "/") {
-		return "", fmt.Errorf("compute.chat_path %q must start with /", text)
+		return "", fmt.Errorf("%s %q must start with /", field, text)
 	}
 	if strings.ContainsAny(text, "?#") {
-		return "", fmt.Errorf("compute.chat_path %q must not include a query or fragment", text)
+		return "", fmt.Errorf("%s %q must not include a query or fragment", field, text)
 	}
 
 	parsed, err := url.ParseRequestURI(text)
 	if err != nil {
-		return "", fmt.Errorf("compute.chat_path %q is not a valid request path: %w", text, err)
+		return "", fmt.Errorf("%s %q is not a valid request path: %w", field, text, err)
 	}
 	if parsed.IsAbs() || parsed.Host != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", fmt.Errorf("compute.chat_path %q must be a path without host, query, or fragment", text)
+		return "", fmt.Errorf("%s %q must be a path without host, query, or fragment", field, text)
 	}
 	return text, nil
 }

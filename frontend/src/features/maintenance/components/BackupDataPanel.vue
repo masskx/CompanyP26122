@@ -14,7 +14,6 @@ const props = defineProps<{
   >
     <header class="data-panel__heading">
       <div>
-        <p>备电状态</p>
         <h3 id="backup-data-title">近 24 小时电量与续航参考</h3>
       </div>
       <span class="data-panel__source">演示数据 · 待接入数据库</span>
@@ -79,13 +78,6 @@ const props = defineProps<{
 .data-panel__heading > div {
   min-width: 0;
   flex: 1 1 210px;
-}
-
-.data-panel__heading p {
-  margin: 0 0 5px;
-  color: #5f7487;
-  font-size: 12px;
-  line-height: 1.4;
 }
 
 .data-panel__heading h3 {

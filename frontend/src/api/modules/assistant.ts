@@ -14,23 +14,29 @@ interface RawCitation {
 }
 
 interface RawMessage {
+  message_id?: string
   content?: string
   citations?: RawCitation[]
   model?: string | null
   created_at?: string
   session_id?: string
+  status?: string
+  seq?: number
 }
 
 export interface AssistantDoneMessage {
+  messageId?: string
   content: string
   citations: AssistantCitation[]
   model?: string
   createdAt?: string
   sessionId?: string
+  status?: string
+  seq?: number
 }
 
 export type AssistantStreamEvent =
-  | { type: 'session'; sessionId: string }
+  | { type: 'session'; sessionId: string; userMessageId?: string }
   | { type: 'tool'; name: string }
   | { type: 'delta'; text: string }
   | { type: 'citation'; citation: AssistantCitation }
@@ -146,7 +152,11 @@ export function parseAssistantEvent(
           '智能服务未返回会话标识。',
         )
       }
-      return { type: 'session', sessionId }
+      return {
+        type: 'session',
+        sessionId,
+        userMessageId: asString(data.user_message_id) || undefined,
+      }
     }
     case 'tool':
       return {
@@ -177,6 +187,7 @@ export function parseAssistantEvent(
       return {
         type: 'done',
         message: {
+          messageId: asString(rawMessage.message_id) || undefined,
           content: asText(rawMessage.content),
           citations: (rawMessage.citations ?? []).map((item, index) =>
             mapCitation(item, index + 1),
@@ -184,6 +195,8 @@ export function parseAssistantEvent(
           model: asString(rawMessage.model) || undefined,
           createdAt: asString(rawMessage.created_at) || undefined,
           sessionId: asString(rawMessage.session_id) || undefined,
+          status: asString(rawMessage.status) || undefined,
+          seq: typeof rawMessage.seq === 'number' ? rawMessage.seq : undefined,
         },
       }
     }

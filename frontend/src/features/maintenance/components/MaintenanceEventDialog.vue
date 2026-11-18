@@ -2,7 +2,6 @@
 import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useMaintenanceStore } from '../stores/maintenance'
 import {
-  equipmentTypeLabels,
   eventSourceLabels,
   healthLevelLabels,
   type MaintenanceEvent,
@@ -51,13 +50,6 @@ onBeforeUnmount(() => {
         aria-labelledby="event-dialog-title"
       >
         <header class="event-dialog__header">
-          <div class="event-dialog__eyebrow">
-            <span>{{ event.eventNumber }}</span>
-            <i aria-hidden="true"></i>
-            <span>{{ event.siteId }} · {{ event.siteName }}</span>
-            <i aria-hidden="true"></i>
-            <span>{{ equipmentTypeLabels[event.equipmentType] }}</span>
-          </div>
           <div class="event-dialog__title-row">
             <div class="event-dialog__heading-main">
               <div class="event-dialog__title-line">
@@ -76,6 +68,14 @@ onBeforeUnmount(() => {
                 </div>
               </div>
               <div class="event-dialog__meta">
+                <span>
+                  <small>事件编号</small>
+                  {{ event.eventNumber }}
+                </span>
+                <span>
+                  <small>站点</small>
+                  {{ event.siteId }} · {{ event.siteName }}
+                </span>
                 <span>
                   <small>触发时间</small>
                   <time :datetime="event.triggeredAt">
@@ -130,14 +130,7 @@ onBeforeUnmount(() => {
               <section class="analysis-section analysis-section--ai">
                 <header class="section-heading section-heading--ai">
                   <div>
-                    <p class="section-kicker">分析结论</p>
                     <h3 id="ai-analysis-title">AI 综合分析</h3>
-                  </div>
-                  <div class="ai-inline-meta" aria-label="分析信息">
-                    <span>{{ event.aiAnalysis.versions.model.name }}</span>
-                    <span>
-                      {{ formatDateTime(event.aiAnalysis.generatedAt) }}
-                    </span>
                   </div>
                 </header>
 
@@ -196,29 +189,12 @@ onBeforeUnmount(() => {
   background: #fff;
 }
 
-.event-dialog__eyebrow {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 9px;
-  color: #60788b;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.event-dialog__eyebrow i {
-  width: 3px;
-  height: 3px;
-  border-radius: 50%;
-  background: #9cabb7;
-}
-
 .event-dialog__title-row {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 24px;
-  margin-top: 5px;
+  margin-top: 0;
   padding-right: 0;
 }
 
@@ -363,14 +339,6 @@ onBeforeUnmount(() => {
   gap: 4px 10px;
 }
 
-.section-kicker {
-  margin: 0;
-  color: #60788b;
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1.4;
-}
-
 .section-heading h3 {
   margin: 0;
   color: #244b69;
@@ -381,24 +349,6 @@ onBeforeUnmount(() => {
 
 .section-heading--ai {
   align-items: center;
-}
-
-.ai-inline-meta {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 6px;
-}
-
-.ai-inline-meta span {
-  padding: 5px 8px;
-  border: 1px solid #dce8f1;
-  border-radius: 6px;
-  background: #f4f8fb;
-  color: #536b80;
-  font-size: 12px;
-  line-height: 1.4;
-  white-space: nowrap;
 }
 
 .data-panels {

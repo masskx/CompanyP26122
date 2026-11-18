@@ -86,13 +86,6 @@ function submitReview() {
         </span>
         <div>
           <h3 id="confirmed-title">该事件已完成人工审核</h3>
-          <p>
-            AI 结论评价：{{ reviewOutcomeLabels[event.review.outcome] }}
-            <template v-if="event.review.updatedAt">
-              · 最后修改
-              {{ formatDateTime(event.review.updatedAt) }}
-            </template>
-          </p>
         </div>
         <button
           type="button"
@@ -165,20 +158,16 @@ function submitReview() {
       </fieldset>
 
       <label class="confirmation-comment">
-        <span>
-          审核说明
-          <small>选填</small>
-        </span>
+        <span>审核说明</span>
         <textarea
           v-model="comment"
           rows="5"
           maxlength="500"
-          placeholder="填写核查情况或人工判断（选填）"
+          placeholder="填写核查情况或人工判断"
         ></textarea>
       </label>
 
       <div class="confirmation-footer">
-        <p v-if="isEditing">修改仅更新审核结论和说明。</p>
         <div class="confirmation-footer__actions">
           <button
             v-if="isEditing"
@@ -261,13 +250,6 @@ function submitReview() {
   color: #316e59;
   font-size: 15px;
   font-weight: 650;
-}
-
-.confirmed-summary p {
-  margin: 6px 0 0;
-  color: #6e8f81;
-  font-size: 12px;
-  line-height: 1.55;
 }
 
 .confirmed-summary__edit {
@@ -404,10 +386,6 @@ function submitReview() {
   font-size: 12px;
 }
 
-.confirmation-comment > span small {
-  color: #65798b;
-}
-
 .confirmation-comment textarea {
   width: 100%;
   min-height: 120px;
@@ -436,13 +414,6 @@ function submitReview() {
   gap: 10px;
   padding-top: 12px;
   border-top: 1px solid #edf2f5;
-}
-
-.confirmation-footer p {
-  margin: 0;
-  color: #65798b;
-  font-size: 12px;
-  line-height: 1.6;
 }
 
 .confirmation-footer__actions {

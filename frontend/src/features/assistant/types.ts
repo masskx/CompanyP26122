@@ -41,18 +41,25 @@ export interface AssistantMessage {
   role: AssistantMessageRole
   content: string
   createdAt: string
+  seq?: number
   status?: AssistantMessageStatus
   progress?: AssistantProgressStep[]
   citations?: AssistantCitation[]
   elapsedSeconds?: number
   errorCode?: string
+  errorMessage?: string
 }
 
 export interface AssistantSession {
   id: string
-  remoteSessionId?: string
   title: string
+  workflow?: string
+  messageCount: number
   messages: AssistantMessage[]
   createdAt: string
   updatedAt: string
+  isDraft?: boolean
+  oldestSeq?: number
+  hasMoreMessages?: boolean
+  messagesLoaded?: boolean
 }

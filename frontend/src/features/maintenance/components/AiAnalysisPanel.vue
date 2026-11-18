@@ -275,7 +275,7 @@ const limitation = computed(() => props.analysis.limitations[0])
   border-radius: 4px;
   background: #fff4dd;
   color: #94600b;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
   white-space: nowrap;
 }
@@ -313,7 +313,7 @@ const limitation = computed(() => props.analysis.limitations[0])
   border-radius: 50%;
   background: #e8eef3;
   color: #526b7e;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
 }
 
@@ -333,7 +333,7 @@ const limitation = computed(() => props.analysis.limitations[0])
   border-radius: 5px;
   background: #e6f1fb;
   color: #1767ad;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   line-height: 1.5;
 }
@@ -384,7 +384,7 @@ const limitation = computed(() => props.analysis.limitations[0])
   display: block;
   margin-top: 4px;
   color: #8a744c;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
 }
 

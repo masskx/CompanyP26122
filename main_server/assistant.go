@@ -83,9 +83,6 @@ func (s *server) handleAssistantChat(w http.ResponseWriter, r *http.Request) {
 	upstreamRequest.Header.Set("Accept", "text/event-stream")
 	upstreamRequest.Header.Set("Content-Type", "application/json; charset=utf-8")
 	upstreamRequest.Header.Set(requestIDHeader, requestID)
-	if userID := strings.TrimSpace(r.Header.Get("X-User-Id")); userID != "" {
-		upstreamRequest.Header.Set("X-User-Id", userID)
-	}
 	if s.computeKey != "" {
 		upstreamRequest.Header.Set("X-API-Key", s.computeKey)
 	}
