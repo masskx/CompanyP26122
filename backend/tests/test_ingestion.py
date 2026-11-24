@@ -121,7 +121,11 @@ def test_mapping_example_format():
 
 def test_build_parser_choices():
     s = Settings(_env_file=None)
-    assert isinstance(build_parser(s), TelemetryV1Format)
+    from app.ingestion.ghmes import GhmesFormat
+
+    assert isinstance(build_parser(s), GhmesFormat)  # the default
+    v1 = s.model_copy(update={"ingest_parser": "telemetry_v1"})
+    assert isinstance(build_parser(v1), TelemetryV1Format)
     mapped = s.model_copy(update={"ingest_parser": "mapping",
                                   "ingest_mapping_file": MQTT / "mapping.example.json"})
     assert isinstance(build_parser(mapped), MappingParser)
@@ -182,7 +186,7 @@ async def test_pipeline_validation_retry_and_buffer(monkeypatch):
     p = Pipeline(ListSource(), FMT, store, known_devices={("S", "D1")}, batch_size=2)
     await p.run()
     assert p.stats.written == 5 and p.stats.write_failures == 2
-    assert p.stats.rejected == {"unknown_device": 1, "bad_value": 1}
+    assert p.stats.rejected == {"unknown_device:S": 1, "bad_value": 1}
 
     p2 = Pipeline(ListSource(), FMT, MemoryTimeSeries(), batch_size=100, max_buffer=3)
     await p2.run()

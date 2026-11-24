@@ -10,7 +10,8 @@ the main server's work orders. With --admin-dsn this creates the user / DBCOMPAT
 database / schema from OPENGAUSS_DSN; then it applies app/db/migrations/*.sql
 (003 removes the tables of version 0.3: station_config, analysis_*).
 IoTDB: creates the database, the series of every station in STATIONS_FILE (detector,
-backup-power and environment units) and the MQTT consumption-watermark series.
+backup-power and environment units), of every auxiliary source (monitoring vehicle, weather
+tower) and the MQTT consumption-watermark series. Series of new metrics are added on re-run.
 The vector database is initialised separately: scripts/build_knowledge.py
 """
 
@@ -20,7 +21,7 @@ import _common
 
 from app.db.migrate import CompatibilityError, bootstrap, migrate
 from app.ingestion.pipeline import run
-from app.stations.store import load_file
+from app.stations.store import load_directory
 from app.timeseries.iotdb import WATERMARK_SERIES, IoTDB
 
 
@@ -68,10 +69,12 @@ def main() -> None:
         print(f"== IoTDB {s.iotdb_host}:{s.iotdb_port}")
         db = IoTDB(s)
         try:
-            stations = load_file(s.stations_file)
-            series = [x for st in stations for x in st.series()] + [WATERMARK_SERIES]
+            stations, auxiliary = load_directory(s.stations_file)
+            series = [x for st in stations for x in st.series()] + \
+                [x for a in auxiliary for x in a.series()] + [WATERMARK_SERIES]
             result = run(db.ensure_schema(series))
-            _common.ok(f"{s.iotdb_root}: {len(stations)} stations, series "
+            _common.ok(f"{s.iotdb_root}: {len(stations)} stations, {len(auxiliary)} auxiliary "
+                       "sources, series "
                        f"created={result['created']} existing={result['existing']}")
         except Exception as exc:
             _common.fail(f"{type(exc).__name__}: {exc}")

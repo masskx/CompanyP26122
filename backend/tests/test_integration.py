@@ -71,11 +71,44 @@ async def test_mqtt_round_trip():
                                                       realtime=False, topic_prefix=prefix,
                                                       clock=lambda: now))
     for _ in range(50):
-        if pipe.stats.written >= 30 * 13 and pipe.watermark == 90:
+        if pipe.stats.written >= 30 * 16 and pipe.watermark == 90:
             break
         await asyncio.sleep(0.1)
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
-    # 30 instants x 3 units: detector 5 values, battery 5, environment 3 (no rain gauge)
-    assert sent == 90 and pipe.stats.written == 30 * 13 and not pipe.stats.rejected
+    # 30 instants x 3 units: detector 5 values, battery 5, environment 6 (no rain gauge)
+    assert sent == 90 and pipe.stats.written == 30 * 16 and not pipe.stats.rejected
     assert pipe.watermark == 90
+
+
+async def test_mqtt_round_trip_ghmes():
+    """The simulator publishes ghmes/signal snapshots over the broker; the ingester reads them
+    back with the ghmes profile and advances the time watermark."""
+    if not os.environ.get("MQTT_TEST_HOST"):
+        pytest.skip("MQTT_TEST_HOST not set")
+    from app.ingestion.ghmes import GhmesFormat, GhmesProfile
+
+    topic = f"it/{uuid.uuid4().hex[:8]}/ghmes/signal"
+    s = Settings(_env_file=None, mqtt_host=os.environ["MQTT_TEST_HOST"], mqtt_topics=[topic])
+    base = GhmesFormat.from_settings(s).profile
+    profile = GhmesProfile.model_validate({**base.model_dump(), "topic": topic})
+    store = MemoryTimeSeries()
+    pipe = Pipeline(MqttSource(s), GhmesFormat(profile), store, flush_seconds=0.1)
+    task = asyncio.create_task(pipe.run())
+    await asyncio.sleep(0.5)
+    station = Station.model_validate({"station_id": "ST01", "name": "s", "sampling_interval_s": 60,
+                                      "devices": [{"device_id": "ST01-DET-01", "name": "d"}]})
+    now = datetime.now(UTC)
+    src = SimulatedSource([station], backfill_hours=0.5, realtime=False, clock=lambda: now,
+                          fmt=GhmesFormat(profile))
+    sent = await MqttPublisher(s).run(src)
+    for _ in range(50):
+        last = max(store.data.get(("ST01", "ST01-DET-01", "dose_rate"), {0: 0}))
+        if pipe.stats.received >= 30 and pipe.watermark == last:
+            break
+        await asyncio.sleep(0.1)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    # one snapshot per instant; detector 5, battery 6 (raw power code + ac_power), environment 6
+    assert sent == 30 and pipe.stats.written == 30 * 17 and not pipe.stats.rejected
+    assert pipe.watermark == last and len(store.data[("ST01", "ST01-DET-01", "dose_rate")]) == 30

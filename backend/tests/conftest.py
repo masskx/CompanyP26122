@@ -21,7 +21,7 @@ from app.ingestion.pipeline import Pipeline
 from app.ingestion.simulator import SimulatedSource
 from app.main import create_app
 from app.stations.model import Station
-from app.stations.store import StationStore, load_file
+from app.stations.store import StationStore, load_directory, load_file
 from app.timeseries.iotdb import MemoryTimeSeries
 
 STATIONS = BASE_DIR / "data" / "stations.json"
@@ -165,7 +165,8 @@ def make_resources(settings, stations, store):
             else None
         return build_resources(settings_ or settings, timeseries=timeseries or store, llm=llm,
                                retriever=retriever, chat_store=chat_store or MemoryChatStore(),
-                               stations=StationStore(stations),
+                               stations=StationStore(
+                                   stations, auxiliary=load_directory(STATIONS)[1]),
                                work_orders=work_orders or MemoryWorkOrderStore(),
                                reports=MemoryReportStore()), llm
 

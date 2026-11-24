@@ -1,5 +1,5 @@
 {
- "_comment": "Station directory snapshot (codes and names from docs/原型/打开工作站.html; the mobile monitoring vehicle M01 is not a fixed station). Thresholds, voltages, runtimes and every 'simulation' block are SYNTHETIC: replace with the main server's real configuration. Leave dose_l1/dose_l2 or battery_warn_v/battery_alarm_v out when not provided: the analysis then reports a configuration gap instead of guessing (AS13 shows this). Scripted events use ago_hours relative to the simulator start, so the last 24 h always contain the demo scenario.",
+ "_comment": "Station directory snapshot (codes and names from docs/原型/打开工作站.html; the mobile monitoring vehicle M01 and the weather tower MET01 are not fixed stations: they are auxiliary_sources, stored as reported without maintenance rules; their channels come from the ghmes/signal sample, tower units not given in the sample). Thresholds, voltages, runtimes and every 'simulation' block are SYNTHETIC: replace with the main server's real configuration. Leave dose_l1/dose_l2 or battery_warn_v/battery_alarm_v out when not provided: the analysis then reports a configuration gap instead of guessing (AS13 shows this). Scripted events use ago_hours relative to the simulator start, so the last 24 h always contain the demo scenario.",
  "stations": [
   {
    "station_id": "AS01",
@@ -958,6 +958,67 @@
     },
     "events": []
    }
+  }
+ ],
+ "auxiliary_sources": [
+  {
+   "source_id": "M01",
+   "name": "环境监测车",
+   "kind": "vehicle",
+   "equipment_id": "M01-VEH-01",
+   "simulation": {"latitude": 37.1, "longitude": 122.4},
+   "channels": [
+    {"field": "gamma_dose_rate", "label": "伽马剂量率", "unit": "μSv/h"},
+    {"field": "temp", "label": "温度", "unit": "℃"},
+    {"field": "humidity", "label": "湿度", "unit": "%"},
+    {"field": "wind_speed", "label": "风速", "unit": "m/s"},
+    {"field": "wind_dir", "label": "风向", "unit": "度"},
+    {"field": "air_pressure", "label": "大气压", "unit": "kPa"},
+    {"field": "lat_wgs84", "label": "WGS84纬度", "unit": null},
+    {"field": "lng_wgs84", "label": "WGS84经度", "unit": null},
+    {"field": "lat_mars", "label": "火星坐标纬度", "unit": null},
+    {"field": "lng_mars", "label": "火星坐标经度", "unit": null},
+    {"field": "altitude", "label": "海拔", "unit": "米"}
+   ]
+  },
+  {
+   "source_id": "MET01",
+   "name": "100 米气象塔",
+   "kind": "weather_tower",
+   "equipment_id": "MET01-TWR-01",
+   "simulation": {"events": [{"type": "rain", "ago_hours": 21, "minutes": 150, "mm_per_hour": 2.0},
+                             {"type": "rain", "ago_hours": 10, "minutes": 120, "mm_per_hour": 3.0},
+                             {"type": "rain", "ago_hours": 4, "minutes": 90, "mm_per_hour": 2.5}]},
+   "channels": [
+    {"field": "wind_dir_10", "label": "10米风向", "unit": null},
+    {"field": "wind_speed_10", "label": "10米风速", "unit": null},
+    {"field": "wind_dir_30", "label": "30米风向", "unit": null},
+    {"field": "wind_speed_30", "label": "30米风速", "unit": null},
+    {"field": "wind_dir_60", "label": "60米风向", "unit": null},
+    {"field": "wind_speed_60", "label": "60米风速", "unit": null},
+    {"field": "wind_dir_80", "label": "80米风向", "unit": null},
+    {"field": "wind_speed_80", "label": "80米风速", "unit": null},
+    {"field": "wind_dir_100", "label": "100米风向", "unit": null},
+    {"field": "wind_speed_100", "label": "100米风速", "unit": null},
+    {"field": "temp_10", "label": "10米温度", "unit": null},
+    {"field": "temp_30", "label": "30米温度", "unit": null},
+    {"field": "temp_60", "label": "60米温度", "unit": null},
+    {"field": "temp_80", "label": "80米温度", "unit": null},
+    {"field": "temp_100", "label": "100米温度", "unit": null},
+    {"field": "humidity_100", "label": "100米湿度", "unit": null},
+    {"field": "ground_wind_dir", "label": "地面风向", "unit": null},
+    {"field": "ground_wind_speed", "label": "地面风速", "unit": null},
+    {"field": "ground_humidity", "label": "地面湿度", "unit": null},
+    {"field": "ground_temp", "label": "地面温度", "unit": null},
+    {"field": "air_pressure", "label": "气压", "unit": null},
+    {"field": "rainfall", "label": "降雨量", "unit": null},
+    {"field": "total_radiation", "label": "总辐射", "unit": null},
+    {"field": "net_radiation", "label": "净辐射", "unit": null},
+    {"field": "evaporation", "label": "蒸发量", "unit": null},
+    {"field": "wind_speed_10_max", "label": "10米最大风速", "unit": null},
+    {"field": "wind_dir_80_min", "label": "80米最小风向", "unit": null},
+    {"field": "wind_speed_10_pole_max", "label": "10米风杆最大风速", "unit": null}
+   ]
   }
  ]
 }

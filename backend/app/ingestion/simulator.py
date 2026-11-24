@@ -1,8 +1,11 @@
 """Synthetic fixed-station data (development / demonstration only, NOT plant data).
 
-Publishes the telemetry_v1 contract: one message per equipment unit and sampling instant,
-topic maintenance/v1/{site_id}/{equipment_id}/telemetry, with a global, monotonically
-increasing source_sequence (what the main server's MQTT publisher provides).
+Publishes either wire format (INGEST_PARSER):
+  ghmes         one ghmes/signal snapshot per station and sampling instant, read back through
+                the ghmes profile (metrics without a channel in the profile are not sent)
+  telemetry_v1  one message per equipment unit and sampling instant, topic
+                maintenance/v1/{site_id}/{equipment_id}/telemetry, with a global, monotonically
+                increasing source_sequence
 
 Profiles live in data/stations.json ("simulation" blocks, never used by the analysis).
 Scripted events either start `ago_hours` before the simulator starts, or at a local clock
@@ -30,10 +33,21 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 from app.ingestion.parsers import RawMessage, TelemetryV1Format
-from app.stations.model import Station, StationDevice
+from app.stations.model import AuxiliarySource, Station, StationDevice
+
+Readings = list[tuple[str, dict[str, Any], dict[str, str]]]  # equipment id, points, units
+_SEVERITY = {"normal": 0, "h1": 1, "h2": 2, "offline": 3, "fault": 4}
+AUX_INTERVAL = timedelta(seconds=60)
+
+
+class WireFormat(Protocol):
+    def encode_batch(self, time: datetime, stations: list[tuple[Station, Readings]],
+                     auxiliary: list[tuple[AuxiliarySource, dict[str, float]]]
+                     ) -> list[RawMessage]: ...
 
 
 @dataclass
@@ -182,7 +196,8 @@ class StationSimulator:
                 round(max(0.0, min(100.0, (min(v, self.rest_v) - 10.8) / 1.2 * 100)), 1)
         return out
 
-    def messages(self, fmt: TelemetryV1Format) -> tuple[datetime, list[RawMessage]]:
+    def readings(self) -> tuple[datetime, Readings]:
+        """The next sampling instant and its readings (empty while the station is offline)."""
         t = self.next_time
         self.next_time = t + self.step
         st = self.station
@@ -199,66 +214,157 @@ class StationSimulator:
                "door": "open" if _active(self.spans, t, "door_open") else "closed"}
         if st.has_rain_gauge:
             env["rainfall"] = round(rain_mm_h * self.step.total_seconds() / 3600, 3)
-        out = []
+        readings: Readings = []
+        statuses = []
         for d in self.detectors:
             points = d.sample(t, rain_mm_h)
             if points is not None:
-                out.append(fmt.encode(st.station_id, d.device.device_id, t, points,
-                                      units={"dose_rate": "uGy/h", "dose_rate_avg": "uGy/h",
-                                             "dose_rate_std": "uGy/h"}))
-        out.append(fmt.encode(st.station_id, st.backup_power_id, t, battery,  # type: ignore[arg-type]
-                              units={"battery_voltage": "V", "battery_level": "%",
-                                     "runtime_hours": "h"}))
-        out.append(fmt.encode(st.station_id, st.environment_id, t, env))  # type: ignore[arg-type]
-        return t, out
+                statuses.append(points.get("status", "offline"))
+                readings.append((d.device.device_id, points,
+                                 {"dose_rate": "μGy/h", "dose_rate_avg": "μGy/h",
+                                  "dose_rate_std": "μGy/h"}))
+        # overall station status (总状态): the worst detector status; samplers report 0
+        env["station_status"] = max(statuses, key=_SEVERITY.__getitem__, default="offline")
+        env["carbon_sampler"] = env["tritium_sampler"] = 0
+        readings.append((st.backup_power_id, battery,  # type: ignore[arg-type]
+                         {"battery_voltage": "V", "battery_level": "%", "runtime_hours": "h"}))
+        readings.append((st.environment_id, env, {}))  # type: ignore[arg-type]
+        return t, readings
+
+
+class AuxiliarySimulator:
+    """Plausible synthetic values for the weather tower / monitoring vehicle channels, from
+    the field names (wind, temperature, humidity, pressure, radiation, position, dose).
+    Profile (optional "simulation" block of the source): {"values": {field: [mean, noise]},
+    "latitude": .., "longitude": .., "events": [{"type": "rain", "ago_hours": .., "minutes":
+    .., "mm_per_hour": ..}]}; rainfall is mm per 60-s sample."""
+
+    def __init__(self, source: AuxiliarySource, tz: ZoneInfo, start: datetime,
+                 anchor: datetime, end: datetime, seed: int | None) -> None:
+        self.source = source
+        step = AUX_INTERVAL.total_seconds()
+        self.next_time = datetime.fromtimestamp(math.ceil(start.timestamp() / step) * step, UTC)
+        p = source.simulation or {}
+        self.values: dict[str, list[float]] = p.get("values", {})
+        self.lat, self.lon = float(p.get("latitude", 37.1)), float(p.get("longitude", 122.4))
+        self.spans = _spans(p.get("events", []), tz, start.astimezone(tz).date(),
+                            end.astimezone(tz).date(), anchor)
+        self.rng = random.Random(f"{seed}:{source.source_id}" if seed is not None else None)
+        self.walk: dict[str, float] = {}
+
+    @staticmethod
+    def _height(field: str) -> float:
+        digits = "".join(ch if ch.isdigit() else " " for ch in field).split()
+        return float(digits[0]) if digits else 10.0
+
+    def _value(self, field: str, unit: str | None, t: datetime, rain_mm_h: float) -> float:
+        g, hour = self.rng.gauss, t.timestamp() / 3600 % 24
+        if field in self.values:
+            mean, noise = self.values[field]
+            return round(mean + g(0, noise), 3)
+        h = self._height(field)
+        if field == "rainfall":
+            return round(rain_mm_h * AUX_INTERVAL.total_seconds() / 3600, 3)
+        if "wind_dir" in field:  # slowly turning wind
+            self.walk[field] = (self.walk.get(field, 120.0) + g(0, 5)) % 360
+            return round(self.walk[field], 1)
+        if "wind_speed" in field:
+            base = 1.5 + 0.03 * h + (1.5 if field.endswith("max") else 0)
+            return round(max(0.0, base + g(0, 0.4)), 2)
+        if field.startswith("temp") or field.endswith("_temp") or field == "temp":
+            return round(14 - 0.006 * h + 4 * math.sin(2 * math.pi * (hour - 8) / 24)
+                         + g(0, 0.2), 2)
+        if "humidity" in field:
+            return round(min(99.0, 60 + 25 * (rain_mm_h > 0) + g(0, 2)), 1)
+        if field == "air_pressure":
+            return round((101.3 if (unit or "").lower() == "kpa" else 1013.0) + g(0, 0.05), 2)
+        if field.endswith("radiation"):
+            sun = max(0.0, math.sin(math.pi * (hour - 6) / 12)) if 6 <= hour <= 18 else 0.0
+            return round(sun * (600 if field.startswith("total") else 400) + g(0, 5), 1)
+        if field == "evaporation":
+            return round(max(0.0, 0.1 + g(0, 0.02)), 3)
+        if field == "gamma_dose_rate":
+            return round(0.1 * (1 + g(0, 0.05)), 4)
+        if field.startswith("lat"):
+            return round(self.lat + 0.002 * math.sin(t.timestamp() / 3600), 6)
+        if field.startswith("lng") or field.startswith("lon"):
+            return round(self.lon + 0.002 * math.cos(t.timestamp() / 3600), 6)
+        if field == "altitude":
+            return round(20 + g(0, 0.5), 1)
+        return round(1.0 + g(0, 0.05), 3)
+
+    def sample(self) -> dict[str, float]:
+        t = self.next_time
+        self.next_time = t + AUX_INTERVAL
+        rain = _active(self.spans, t, "rain")
+        rain_mm_h = float(rain.params.get("mm_per_hour", 1.0)) if rain else 0.0
+        return {c.field: self._value(c.field, c.unit, t, rain_mm_h) for c in self.source.channels}
 
 
 class SimulatedSource:
-    """History first (backfill), then live messages in real time (unless realtime=False)."""
+    """History first (backfill), then live messages in real time (unless realtime=False).
+    Every sampling instant becomes one batch: with ghmes, one message listing every station
+    due at that instant plus the auxiliary sources (weather tower, vehicle), like the real
+    feed; with telemetry_v1, one message per equipment unit (auxiliary sources not sent)."""
 
     def __init__(self, stations: list[Station], *, timezone: str = "Asia/Shanghai",
                  backfill_hours: float = 48, realtime: bool = True, seed: int | None = 42,
                  topic_prefix: str = "maintenance/v1", live_days: int = 30,
                  clock: Callable[[], datetime] = lambda: datetime.now(UTC),
-                 first_sequence: int = 1) -> None:
+                 first_sequence: int = 1, fmt: WireFormat | None = None,
+                 auxiliary: list[AuxiliarySource] | None = None) -> None:
         self.stations = stations
+        self.auxiliary = auxiliary or []
         self.tz = ZoneInfo(timezone)
         self.backfill = timedelta(hours=backfill_hours)
         self.realtime, self.seed, self.live_days = realtime, seed, live_days
-        self.format = TelemetryV1Format(topic_prefix)
-        self.format._seq = first_sequence - 1
+        self.format = fmt or TelemetryV1Format(topic_prefix)
+        if isinstance(self.format, TelemetryV1Format):
+            self.format._seq = first_sequence - 1
         self.clock = clock
 
     @property
     def last_sequence(self) -> int:
-        return self.format._seq
+        """Last source_sequence sent (telemetry_v1; ghmes has none and returns 0)."""
+        return getattr(self.format, "_seq", 0)
 
     async def run(self, emit: Callable[[RawMessage], Awaitable[None]]) -> None:
         anchor = self.clock()
+        start = anchor - self.backfill
         end = anchor + timedelta(days=self.live_days if self.realtime else 0)
-        sims = [StationSimulator(s, self.tz, anchor - self.backfill, anchor, end, self.seed)
-                for s in self.stations]
-
-        async def emit_step(sim: StationSimulator) -> None:
-            _, messages = sim.messages(self.format)
-            for m in messages:
-                await emit(m)
-
-        # history in time order across stations, so the sequence follows event time
+        sims: list[Any] = [StationSimulator(s, self.tz, start, anchor, end, self.seed)
+                           for s in self.stations]
+        sims += [AuxiliarySimulator(a, self.tz, start, anchor, end, self.seed)
+                 for a in self.auxiliary]
         heap = [(s.next_time, i) for i, s in enumerate(sims)]
         heapq.heapify(heap)
+
+        async def emit_instant() -> None:
+            due = heap[0][0]
+            due_now = []
+            while heap and heap[0][0] == due:
+                due_now.append(heapq.heappop(heap)[1])
+            stations, auxiliary = [], []
+            for i in due_now:
+                sim = sims[i]
+                if isinstance(sim, StationSimulator):
+                    _, readings = sim.readings()
+                    if readings:
+                        stations.append((sim.station, readings))
+                else:
+                    auxiliary.append((sim.source, sim.sample()))
+                heapq.heappush(heap, (sim.next_time, i))
+            for m in self.format.encode_batch(due, stations, auxiliary):
+                await emit(m)
+
+        # history in time order, so the sequence / data time follows event time
         while heap and heap[0][0] <= anchor:
-            _, i = heapq.heappop(heap)
-            await emit_step(sims[i])
-            heapq.heappush(heap, (sims[i].next_time, i))
+            await emit_instant()
         if not self.realtime:
             return
         while heap:
-            due, i = heap[0]
-            wait = (due - self.clock()).total_seconds()
+            wait = (heap[0][0] - self.clock()).total_seconds()
             if wait > 0:
                 await asyncio.sleep(min(wait, 1.0))
                 continue
-            heapq.heappop(heap)
-            await emit_step(sims[i])
-            heapq.heappush(heap, (sims[i].next_time, i))
+            await emit_instant()

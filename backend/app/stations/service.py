@@ -7,7 +7,10 @@ from app.stations.model import (
     CODE_STATUS,
     METRIC_TYPE,
     METRICS_BY_TYPE,
+    STATUS_METRICS,
     UNITS,
+    VENDOR_CODE_METRICS,
+    AuxiliarySource,
     EquipmentType,
     Metric,
     Station,
@@ -28,9 +31,11 @@ def readable(metric: Metric, p: Point | None) -> dict | None:
     if p is None or p.value is None:
         return None
     out: dict = {"time": p.time.isoformat()}
-    if metric == Metric.STATUS:
+    if metric in STATUS_METRICS:
         status = CODE_STATUS.get(int(p.value))
         out["value"] = status.value if status else f"unknown({p.value:g})"
+    elif metric in VENDOR_CODE_METRICS:  # meaning of the codes not confirmed yet
+        out["value"], out["code"] = int(p.value) if p.value.is_integer() else p.value, True
     elif metric in _FLAGS:
         on, off = _FLAGS[metric]
         out["value"] = on if p.value == 1 else off
@@ -74,6 +79,37 @@ class StationService:
                 "environment": {"equipment_id": station.environment_id,
                                 **await unit(station.environment_id,  # type: ignore[arg-type]
                                              EquipmentType.ENVIRONMENT)}}
+
+    async def auxiliary_latest(self, source: AuxiliarySource) -> dict:
+        """Latest stored value of every declared channel (as reported, with its unit)."""
+        eq = source.equipment_id
+        *points, comm = await asyncio.gather(
+            *(self.store.latest(source.source_id, eq, c.field)  # type: ignore[arg-type]
+              for c in source.channels), self.store.latest(source.source_id, eq, "comm"))  # type: ignore[arg-type]
+        return {"comm": readable(Metric.COMM, comm),
+                "channels": {c.field: None if p is None or p.value is None else
+                             {"time": p.time.isoformat(), "value": p.value, "unit": c.unit,
+                              "label": c.label}
+                             for c, p in zip(source.channels, points, strict=True)}}
+
+    async def auxiliary_telemetry(self, source: AuxiliarySource, field: str, start: datetime,
+                                  end: datetime, interval_seconds: int | None) -> dict:
+        channel = source.channel(field)
+        if channel is None:
+            raise StationNotFound(f"{source.source_id}/{field}")
+        eq = source.equipment_id
+        if interval_seconds:
+            buckets = await self.store.aggregate(source.source_id, eq, field, start, end,  # type: ignore[arg-type]
+                                                 interval_seconds)
+            data = [{"time": b.time.isoformat(), "avg": b.avg, "min": b.min, "max": b.max,
+                     "count": b.count} for b in buckets]
+        else:
+            points = await self.store.query(source.source_id, eq, field, start, end,  # type: ignore[arg-type]
+                                            limit=10_000)
+            data = [{"time": p.time.isoformat(), "value": p.value} for p in points]
+        return {"source_id": source.source_id, "equipment_id": eq, "field": field,
+                "label": channel.label, "unit": channel.unit,
+                "interval_seconds": interval_seconds, "points": data}
 
     async def telemetry(self, station: Station, device_id: str | None, metric: Metric,
                         start: datetime, end: datetime, interval_seconds: int | None) -> dict:

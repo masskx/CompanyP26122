@@ -1,0 +1,44 @@
+{
+  "_comment": "How ghmes/signal snapshots (the format sent by the MQTT administrator) are read; see app/ingestion/ghmes.py. Fields marked TO CONFIRM are assumptions: the sample contained only zeros under 通讯故障. Check a capture with: python scripts/ingest_mqtt.py --file data/mqtt/ghmes.example.jsonl --dry-run",
+  "topic": "ghmes/signal",
+  "timezone": "Asia/Shanghai",
+  "station_systems": ["固定子站"],
+  "_station_map": "optional signalCode -> station id; without it the id is the start of signalName (AS01-三废区 -> AS01)",
+  "station_map": {},
+  "station_id_pattern": "^(?P<station>[A-Za-z]{1,4}\\d{1,4})(?:[-_\\s]|$)",
+  "equipment": {
+    "detector": "{site}-DET-01",
+    "backup_power": "{site}-BAT-01",
+    "environment": "{site}-ENV-01"
+  },
+  "comm_ok": ["通讯正常", "正常", "在线"],
+  "comm_fault": ["通讯故障", "通讯中断", "离线"],
+  "_codes": "TO CONFIRM with the MQTT administrator: the meaning of every status code. Assumed: 0 normal, 1 level-1 alarm, 2 level-2 alarm, 3 fault, 4 offline (the prototype's 总状态 filter: 正常 / 一级报警 / 二级报警 / 故障); power_status 0 mains, 1 on battery. Raw codes are also stored (power_status, carbon_sampler, tritium_sampler).",
+  "channels": {
+    "gamma_instant": [{"unit": "detector", "metric": "dose_rate"}],
+    "gamma_avg": [{"unit": "detector", "metric": "dose_rate_avg"}],
+    "gamma_std": [{"unit": "detector", "metric": "dose_rate_std"}],
+    "gamma_status": [{"unit": "detector", "metric": "status",
+                      "codes": {"0": "normal", "1": "h1", "2": "h2", "3": "fault", "4": "offline"}}],
+    "total_status": [{"unit": "environment", "metric": "station_status",
+                      "codes": {"0": "normal", "1": "h1", "2": "h2", "3": "fault", "4": "offline"}}],
+    "power_status": [{"unit": "backup_power", "metric": "power_status"},
+                     {"unit": "backup_power", "metric": "ac_power", "codes": {"0": "on", "1": "off"}}],
+    "carbon_status": [{"unit": "environment", "metric": "carbon_sampler"}],
+    "tritium_status": [{"unit": "environment", "metric": "tritium_sampler"}],
+    "battery_voltage": [{"unit": "backup_power", "metric": "battery_voltage"}],
+    "battery_level": [{"unit": "backup_power", "metric": "battery_level"}],
+    "charge_status": [{"unit": "backup_power", "metric": "charging", "codes": {"0": "off", "1": "on"}}],
+    "runtime_hours": [{"unit": "backup_power", "metric": "runtime_hours"}],
+    "shelter_temp": [{"unit": "environment", "metric": "shelter_temp"}],
+    "shelter_humidity": [{"unit": "environment", "metric": "shelter_humidity"}],
+    "door_status": [{"unit": "environment", "metric": "door", "codes": {"0": "closed", "1": "open"}}],
+    "rainfall": [{"unit": "environment", "metric": "rainfall"}]
+  },
+  "_proposed_channels": "battery_voltage ... rainfall above are NOT in the administrator's sample. The backup-power and rain rules need them; the simulator publishes them under these names. Ask the administrator to add them (or rename them here to the real fieldNames).",
+  "ignore_fields": [],
+  "auxiliary": {
+    "环境监测车": {"source_id": "M01", "equipment_id": "M01-VEH-01"},
+    "气象塔": {"source_id": "MET01", "equipment_id": "MET01-TWR-01"}
+  }
+}

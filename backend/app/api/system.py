@@ -26,11 +26,15 @@ async def health(r: Resources = Depends(get_resources)):
     checks["work_orders"]["backend"] = "opengauss" if s.opengauss_dsn else "memory"
     try:
         checks["stations"] = {"status": "ok", "count": len(await r.stations.all()),
+                              "auxiliary_sources": len(await r.stations.auxiliary()),
                               "version": r.stations.version}
     except Exception as exc:
         checks["stations"] = {"status": "error", "detail": str(exc)[:200]}
     try:
-        checks["mqtt_watermark"] = {"status": "ok", "value": await r.station_data.watermark()}
+        checks["mqtt_watermark"] = {"status": "ok", "value": await r.station_data.watermark(),
+                                    "parser": s.ingest_parser,
+                                    "kind": "data_time_ms" if s.ingest_parser == "ghmes"
+                                    else "source_sequence"}
     except Exception as exc:
         checks["mqtt_watermark"] = {"status": "error", "detail": str(exc)[:200]}
     checks["knowledge"] = await r.retriever.status() if r.retriever else {"status": "disabled"}

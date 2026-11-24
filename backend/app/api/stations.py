@@ -73,3 +73,51 @@ async def telemetry(station_id: str,
         raise HTTPException(422, str(exc)) from None
     except TimeSeriesError as exc:
         raise _unavailable(exc) from exc
+
+
+# ---- auxiliary sources: monitoring vehicle, weather tower (stored as reported) ------------
+
+async def _source(r: Resources, source_id: str):
+    a = await r.stations.auxiliary_source(source_id)
+    if a is None:
+        raise HTTPException(404, f"auxiliary source {source_id} not found")
+    return a
+
+
+@router.get("/auxiliary")
+async def list_auxiliary(r: Resources = Depends(get_resources)):
+    """Monitoring vehicle, weather tower, ...: channels as declared in STATIONS_FILE."""
+    return [a.model_dump(mode="json") for a in await r.stations.auxiliary()]
+
+
+@router.get("/auxiliary/{source_id}")
+async def get_auxiliary(source_id: str, r: Resources = Depends(get_resources)):
+    """The source with the latest value of every channel (no unit conversion)."""
+    a = await _source(r, source_id)
+    try:
+        return a.model_dump(mode="json") | {"latest": await r.station_data.auxiliary_latest(a)}
+    except TimeSeriesError as exc:
+        raise _unavailable(exc) from exc
+
+
+@router.get("/auxiliary/{source_id}/telemetry")
+async def auxiliary_telemetry(
+        source_id: str,
+        field: str = Query(..., description="channel, e.g. wind_speed_10"),
+        start: datetime | None = Query(None, description="default: end - 24 h"),
+        end: datetime | None = Query(None, description="default: now"),
+        interval: int | None = Query(None, ge=1, le=86400),
+        r: Resources = Depends(get_resources)):
+    a = await _source(r, source_id)
+    end = end or datetime.now(UTC)
+    start = start or end - timedelta(hours=24)
+    if start.tzinfo is None or end.tzinfo is None or start >= end:
+        raise HTTPException(422, "start/end must include a time zone and start < end")
+    if end - start > timedelta(days=31):
+        raise HTTPException(422, "time range is limited to 31 days")
+    try:
+        return await r.station_data.auxiliary_telemetry(a, field, start, end, interval)
+    except StationNotFound:
+        raise HTTPException(404, f"channel {field} not found at {source_id}") from None
+    except TimeSeriesError as exc:
+        raise _unavailable(exc) from exc
