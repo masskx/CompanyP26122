@@ -12,7 +12,7 @@ from app.ingestion.pipeline import FileSource, Pipeline
 from app.ingestion.simulator import SimulatedSource
 from app.maintenance.schemas import AnalysisRequest, watermark_value
 from app.stations.model import STATUS_CODES, DeviceStatus
-from app.stations.store import known_equipment
+from app.stations.store import known_equipment, load_directory
 from app.timeseries.iotdb import MemoryTimeSeries
 
 pytestmark = pytest.mark.anyio
@@ -96,7 +96,8 @@ def test_partial_problems_are_counted_not_fatal():
     assert got[("AS02", "AS02-ENV-01", "station_status")] == 1.0  # unknown comm text: kept
     assert ("AS02", "AS02-DET-01", "status") not in got and \
         ("AS02", "AS02-DET-01", "dose_rate_std") not in got
-    assert f.partial_rejections == {"unknown_code": 1, "unmapped_field": 1, "missing_value": 1,
+    assert f.partial_rejections == {"unknown_code": 1, "unmapped_field:mystery": 1,
+                                    "missing_value": 1,
                                     "unknown_unit": 1, "unknown_comm_status": 1,
                                     "unmapped_signal": 2}
     with pytest.raises(Rejected, match="bad_topic"):
@@ -193,3 +194,52 @@ async def test_auxiliary_endpoints(make_client):
                                                   ["time"], "value": 0, "code": True}
     h = (await client.get("/health")).json()["checks"]
     assert h["stations"]["auxiliary_sources"] == 2 and h["mqtt_watermark"]["parser"] == "ghmes"
+
+
+def test_new_fields_in_the_same_structure():
+    """The feed will grow (e.g. battery voltage) but keep its structure: a field already in the
+    profile is stored at once; an unknown one is counted by name until it is added."""
+    f = fmt()
+    out = by_key(f.parse(message(signal("AS01-三废区", code="sig-001", channels=[
+        channel("gamma_instant", 0.09, "μGy/h"), channel("battery_voltage", 12.6, "V"),
+        channel("battery_temp", 21.0, "℃")]))))
+    assert out[("AS01", "AS01-BAT-01", "battery_voltage")] == 12.6
+    assert f.partial_rejections == {"unmapped_field:battery_temp": 1}
+
+
+async def test_one_message_lists_every_station_tower_and_vehicle(stations):
+    """As in the real feed: one ghmes/signal message per instant with every station (a dozen
+    later) plus the weather tower and the monitoring vehicle."""
+    _, auxiliary = load_directory(BASE_DIR / "data" / "stations.json")
+    picked = [s for s in stations if s.sampling_interval_s == 60][:12]
+    now = datetime.now(UTC).replace(second=0, microsecond=0)
+    sent: list[RawMessage] = []
+
+    async def collect(m: RawMessage) -> None:
+        sent.append(m)
+
+    await SimulatedSource(picked, backfill_hours=0.25, realtime=False, clock=lambda: now,
+                          fmt=fmt(), auxiliary=auxiliary).run(collect)
+    assert len(sent) == 16  # one message per minute, both ends of the 15 min included
+    body = json.loads(sent[-1].payload)
+    assert [s["bizSystem"] for s in body].count("固定子站") == 12
+    assert {s["signalName"] for s in body} >= {"环境监测车", "100 米气象塔"}
+    assert len({s["dataTime"] for s in body}) == 1
+
+    ts = MemoryTimeSeries()
+    known = known_equipment(BASE_DIR / "data" / "stations.json")
+
+    class Replay:
+        async def run(self, emit):
+            for m in sent:
+                await emit(m)
+
+    pipe = Pipeline(Replay(), fmt(), ts, known_devices=known)
+    await pipe.run()
+    assert not pipe.stats.rejected
+    assert pipe.watermark == int(now.timestamp() * 1000)  # the newest dataTime
+    tower = {k[2] for k in ts.data if k[0] == "MET01"}
+    assert {"wind_speed_100", "temp_10", "rainfall", "comm"} <= tower
+    lat = ts.data[("M01", "M01-VEH-01", "lat_wgs84")]
+    assert len(lat) == 16 and all(37 < v < 37.2 for v in lat.values())
+    assert {k[0] for k in ts.data} >= {s.station_id for s in picked}

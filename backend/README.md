@@ -207,8 +207,10 @@ python scripts/ingest_mqtt.py --host <broker> --dry-run                         
 python scripts/ingest_mqtt.py                                                   # store it
 ```
 
-The `--dry-run` statistics count what was not stored, e.g. `unmapped_field` or `unknown_code`.
-Send the main server's real messages through it before trusting the mapping.
+The statistics name what was not stored, e.g. `unmapped_field:<fieldName>` (a newly added
+field: map it in `ghmes.json`), `unknown_device:<station>` (add the station to
+`data/stations.json`) or `unknown_code`. Send the main server's real messages through it before
+trusting the mapping. See "When the feed grows" in docs/mqtt-ghmes.md.
 
 **Other formats:**
 - `INGEST_PARSER=telemetry_v1`: the design document's contract, topic

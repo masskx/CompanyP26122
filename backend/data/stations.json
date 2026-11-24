@@ -966,6 +966,7 @@
    "name": "环境监测车",
    "kind": "vehicle",
    "equipment_id": "M01-VEH-01",
+   "simulation": {"latitude": 37.1, "longitude": 122.4},
    "channels": [
     {"field": "gamma_dose_rate", "label": "伽马剂量率", "unit": "μSv/h"},
     {"field": "temp", "label": "温度", "unit": "℃"},
@@ -985,6 +986,9 @@
    "name": "100 米气象塔",
    "kind": "weather_tower",
    "equipment_id": "MET01-TWR-01",
+   "simulation": {"events": [{"type": "rain", "ago_hours": 21, "minutes": 150, "mm_per_hour": 2.0},
+                             {"type": "rain", "ago_hours": 10, "minutes": 120, "mm_per_hour": 3.0},
+                             {"type": "rain", "ago_hours": 4, "minutes": 90, "mm_per_hour": 2.5}]},
    "channels": [
     {"field": "wind_dir_10", "label": "10米风向", "unit": null},
     {"field": "wind_speed_10", "label": "10米风速", "unit": null},

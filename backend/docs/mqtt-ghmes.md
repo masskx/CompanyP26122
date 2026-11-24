@@ -47,11 +47,12 @@ Topic `ghmes/signal`. The payload is a JSON array with one **signal** per monito
 
 **Problems are counted, not fatal.** One bad channel or signal never discards the rest of the
 message. The counts appear in the ingester's statistics:
-- `unmapped_field`
+- `unmapped_field:<fieldName>`
 - `unknown_code`
 - `unknown_unit`
 - `missing_value`
 - `unmapped_signal`
+- `unknown_device:<station>` (not in `data/stations.json`)
 
 **Changing the mapping:** edit `data/mqtt/ghmes.json`, for example:
 - a renamed field;
@@ -61,6 +62,38 @@ message. The counts appear in the ingester's statistics:
 
 Then check it with
 `python scripts/ingest_mqtt.py --file <capture>.jsonl --dry-run`.
+
+## When the feed grows
+
+The structure stays the same: one list per message, one signal per object. Today the feed has
+one station, plus the weather tower and the monitoring vehicle; later it will have about a
+dozen stations.
+
+**A new station:**
+- Nothing in the code changes. The station id is read from `signalName` (`AS02-综合楼` → AS02).
+- Its data is stored only if the station is in `data/stations.json`, together with its
+  thresholds. Until then the ingester counts `unknown_device:<station>` and logs it once.
+- Afterwards, run `python scripts/init_db.py --only iotdb` to create its series.
+- The directory currently holds the 18 prototype stations with synthetic thresholds.
+  Stations that never report show as offline / `insufficient_data`. Remove them, or
+  replace their thresholds with the real configuration, when the real list is known.
+- A station whose name doesn't start with its code needs a `station_map` entry.
+
+**A new field, e.g. battery voltage:**
+- **Already mapped:** if its fieldName is already in `channels` (`battery_voltage`,
+  `battery_level`, `charge_status`, `runtime_hours`, `shelter_temp`, `shelter_humidity`,
+  `door_status`, `rainfall`), it is stored at once and the backup-power rules start working.
+- **Otherwise:**
+  - It is counted as `unmapped_field:<fieldName>` and logged once with its label and unit.
+  - To store it, add a line to `channels` in `data/mqtt/ghmes.json`, e.g.
+    `"battery_volt": [{"unit": "backup_power", "metric": "battery_voltage"}]`.
+  - Restart the ingester.
+  - Data from before the mapping is not stored.
+- **Tower or vehicle:** a new field is stored as is. To show it in the API, add it to
+  `auxiliary_sources[].channels` in `data/stations.json`.
+
+**The simulator** publishes the same shape: one `ghmes/signal` message per instant with every
+station, the weather tower and the vehicle (`--no-auxiliary` leaves the last two out).
 
 ## Watermark
 
@@ -73,7 +106,7 @@ The main server's `mqtt_watermark` in `POST /internal/v1/maintenance/analyses` c
 - an ISO time with a time zone, e.g. its `data_cutoff`.
 
 The analysis then waits until the ingester has consumed data up to that time. This assumes
-one message carries all stations with the same `dataTime`, as in the sample.
+one message lists all objects with the same `dataTime`, which is how the feed is published.
 
 ## To confirm with the MQTT administrator
 

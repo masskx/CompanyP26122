@@ -165,12 +165,12 @@ class TelemetryV1Format:
         return RawMessage("/".join([*self.prefix, site_id, equipment_id, "telemetry"]),
                           json.dumps(body, ensure_ascii=False).encode())
 
-    def encode_readings(self, station: Any, time: datetime,
-                        readings: list[tuple[str, dict[str, Any], dict[str, str]]]
-                        ) -> list[RawMessage]:
-        """One message per equipment unit (simulator)."""
+    def encode_batch(self, time: datetime, stations: list[tuple[Any, list]],
+                     auxiliary: list[tuple[Any, dict]]) -> list[RawMessage]:
+        """One message per equipment unit (simulator). Auxiliary sources have no metrics in
+        this contract and are not sent."""
         return [self.encode(station.station_id, eq, time, points, units=units)
-                for eq, points, units in readings]
+                for station, readings in stations for eq, points, units in readings]
 
     # -- parsing -------------------------------------------------------------------------------
 

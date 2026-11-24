@@ -231,6 +231,7 @@ class AuxiliarySource(BaseModel):
     kind: Literal["vehicle", "weather_tower", "other"] = "other"
     equipment_id: str | None = Field(default=None, pattern=ID_PATTERN)  # default <id>-01
     channels: list[AuxiliaryChannel] = Field(default_factory=list)
+    simulation: dict[str, Any] | None = Field(default=None, exclude=True)  # simulator only
 
     @model_validator(mode="after")
     def _check(self) -> "AuxiliarySource":

@@ -158,6 +158,7 @@ class Pipeline:
         self.batch_size, self.flush_seconds = batch_size, flush_seconds
         self.max_buffer, self.max_skew = max_buffer, max_future_skew
         self.stats = Stats()
+        self._unknown_sites: set[str] = set()
         self._queue: asyncio.Queue[RawMessage | None] = asyncio.Queue(maxsize=10_000)
         self._buffer: list[Measurement] = []
         # highest source_sequence received / durably written (the consumption watermark)
@@ -166,7 +167,12 @@ class Pipeline:
 
     def _check(self, m: Measurement) -> None:
         if self.known is not None and (m.site, m.device_id) not in self.known:
-            raise Rejected("unknown_device", f"{m.site}/{m.device_id}")
+            if m.site not in self._unknown_sites:  # e.g. a station added to the feed
+                self._unknown_sites.add(m.site)
+                logger.warning("%s/%s is not in STATIONS_FILE: its data is not stored until "
+                               "the station (or auxiliary source) is added there", m.site,
+                               m.device_id)
+            raise Rejected(f"unknown_device:{m.site[:40]}", m.device_id)
         if not math.isfinite(m.value) or (m.metric == "dose_rate" and m.value < 0):
             raise Rejected("bad_value", str(m.value))
         if m.time > datetime.now(UTC) + self.max_skew:

@@ -59,19 +59,20 @@ async def _demo_simulation(r: Resources) -> None:
     from app.ingestion.parsers import build_format
     from app.ingestion.pipeline import Pipeline
     from app.ingestion.simulator import SimulatedSource
-    from app.stations.store import load_file
+    from app.stations.store import load_directory
 
     s = r.settings
-    stations = load_file(s.stations_file)  # simulation profiles live in the file
+    stations, auxiliary = load_directory(s.stations_file)  # simulation profiles live there
     history = SimulatedSource(stations, timezone=s.analysis_timezone,
                               backfill_hours=s.simulator_backfill_hours, realtime=False,
                               seed=s.simulator_seed, topic_prefix=s.ingest_topic_prefix,
-                              fmt=build_format(s))
+                              fmt=build_format(s), auxiliary=auxiliary)
     await Pipeline(history, build_format(s), r.timeseries, batch_size=5000).run()
     logger.info("demo simulation: %.0f h of history written", s.simulator_backfill_hours)
     live = SimulatedSource(stations, timezone=s.analysis_timezone, backfill_hours=0,
                            seed=s.simulator_seed, topic_prefix=s.ingest_topic_prefix,
-                           first_sequence=history.last_sequence + 1, fmt=build_format(s))
+                           first_sequence=history.last_sequence + 1, fmt=build_format(s),
+                           auxiliary=auxiliary)
     await Pipeline(live, build_format(s), r.timeseries).run()
 
 

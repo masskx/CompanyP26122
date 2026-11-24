@@ -31,6 +31,7 @@ same epoch-ms value or as an ISO time (its data_cutoff).
 """
 
 import json
+import logging
 import math
 import re
 from collections import Counter
@@ -50,12 +51,14 @@ from app.stations.model import (
     ON,
     STATUS_CODES,
     STATUS_METRICS,
+    AuxiliarySource,
     DeviceStatus,
     Metric,
     Station,
 )
 from app.timeseries.iotdb import Measurement
 
+logger = logging.getLogger(__name__)
 UnitKind = Literal["detector", "backup_power", "environment"]
 _FIELD = re.compile(FIELD_PATTERN)
 _OFFLINE = float(STATUS_CODES[DeviceStatus.OFFLINE])
@@ -133,6 +136,7 @@ class GhmesFormat:
         self._fault = {s.strip() for s in profile.comm_fault}
         self.partial_rejections: Counter[str] = Counter()
         self.last_sequence: int | None = None  # newest dataTime of the last message, epoch ms
+        self._reported: set[str] = set()
 
     @classmethod
     def from_file(cls, path: Path, timezone: str = "Asia/Shanghai") -> "GhmesFormat":
@@ -216,6 +220,16 @@ class GhmesFormat:
             self.partial_rejections["unknown_comm_status"] += 1
         return None  # unknown: keep the values, report no comm state
 
+    def _unmapped(self, field: str, ch: dict) -> None:
+        """A field the profile does not know (e.g. a newly added battery voltage): counted by
+        name and logged once, so it can be added to the profile's `channels`."""
+        self.partial_rejections[f"unmapped_field:{field[:40]}"] += 1
+        if field not in self._reported:
+            self._reported.add(field)
+            logger.warning("ghmes: field %r (%s, unit %r) is not in the profile; add it to "
+                           "`channels` in INGEST_GHMES_FILE to store it", field,
+                           str(ch.get("label") or "")[:40], ch.get("unit"))
+
     def _value(self, target: ChannelTarget, raw: Any, unit: Any) -> float:
         if target.codes is not None:
             mapped = target.codes.get(_code_key(raw))
@@ -237,7 +251,7 @@ class GhmesFormat:
             targets = p.channels.get(field)
             if targets is None:
                 if field not in p.ignore_fields:
-                    self.partial_rejections["unmapped_field"] += 1
+                    self._unmapped(field, ch)
                 continue
             state = self._comm(ch.get("commStatus"))
             for target in targets:
@@ -347,9 +361,34 @@ class GhmesFormat:
                 "dataTime": time.astimezone(self.tz).strftime("%Y-%m-%d %H:%M:%S"),
                 "channels": channels}
 
-    def encode_readings(self, station: Station, time: datetime,
-                        readings: list[tuple[str, dict[str, Any], dict[str, str]]]
-                        ) -> list[RawMessage]:
+    def encode_auxiliary(self, source: AuxiliarySource, time: datetime,
+                         values: dict[str, float]) -> dict | None:
+        key = next((k for k, r in self.profile.auxiliary.items()
+                    if r.source_id == source.source_id), None)
+        if key is None:  # the profile does not route this source: nothing to send
+            return None
+        ok_text = self.profile.comm_ok[0] if self.profile.comm_ok else ""
+        channels = [{"deviceCode": source.source_id.lower(), "deviceName": source.name,
+                     "channelNo": n, "alias": "", "label": c.label, "fieldName": c.field,
+                     "kind": "value", "unit": c.unit or "", "value": values[c.field],
+                     "status": "", "commStatus": ok_text}
+                    for n, c in enumerate(source.channels, 1) if c.field in values]
+        # the routing key may be a signalCode or a bizSystem: parse() checks both
+        return {"signalCode": key, "signalName": source.name, "bizSystem": key,
+                "dataTime": time.astimezone(self.tz).strftime("%Y-%m-%d %H:%M:%S"),
+                "channels": channels}
+
+    def encode_batch(self, time: datetime,
+                     stations: list[tuple[Station, list[tuple[str, dict[str, Any],
+                                                             dict[str, str]]]]],
+                     auxiliary: list[tuple[AuxiliarySource, dict[str, float]]]
+                     ) -> list[RawMessage]:
+        """One snapshot message listing every station and auxiliary source (as the main
+        server publishes it)."""
+        body = [self.encode_signal(st, time, readings) for st, readings in stations]
+        body += [s for a, values in auxiliary
+                 if (s := self.encode_auxiliary(a, time, values)) is not None]
+        if not body:
+            return []
         topic = self.profile.topic.replace("/#", "").replace("+", "x")
-        body = [self.encode_signal(station, time, readings)]
         return [RawMessage(topic, json.dumps(body, ensure_ascii=False).encode())]

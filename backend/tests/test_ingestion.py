@@ -186,7 +186,7 @@ async def test_pipeline_validation_retry_and_buffer(monkeypatch):
     p = Pipeline(ListSource(), FMT, store, known_devices={("S", "D1")}, batch_size=2)
     await p.run()
     assert p.stats.written == 5 and p.stats.write_failures == 2
-    assert p.stats.rejected == {"unknown_device": 1, "bad_value": 1}
+    assert p.stats.rejected == {"unknown_device:S": 1, "bad_value": 1}
 
     p2 = Pipeline(ListSource(), FMT, MemoryTimeSeries(), batch_size=100, max_buffer=3)
     await p2.run()

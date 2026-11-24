@@ -30,7 +30,7 @@ from app.ingestion.pipeline import (
     run_until_stopped,
 )
 from app.ingestion.simulator import SimulatedSource
-from app.stations.store import load_file
+from app.stations.store import load_directory
 from app.timeseries.iotdb import WATERMARK_SERIES, IoTDB
 
 
@@ -40,7 +40,10 @@ def main() -> None:
     p.add_argument("--hours", type=float, help="history to generate first (default 48)")
     p.add_argument("--no-live", action="store_true", help="exit after the history")
     p.add_argument("--duration", type=float, metavar="MIN", help="stop after N minutes")
-    p.add_argument("--station", action="append", help="only these stations (repeatable)")
+    p.add_argument("--station", action="append",
+                   help="only these stations (repeatable; no weather tower / vehicle)")
+    p.add_argument("--no-auxiliary", action="store_true",
+                   help="leave out the weather tower and the monitoring vehicle")
     p.add_argument("--seed", type=int)
     p.add_argument("--purge", action="store_true")
     p.add_argument("--yes", action="store_true")
@@ -57,8 +60,10 @@ def main() -> None:
         print(f"deleted all series under {s.iotdb_root}; run scripts/init_db.py --only iotdb")
         return
 
-    stations = [st for st in load_file(s.stations_file)
-                if not args.station or st.station_id in args.station]
+    all_stations, auxiliary = load_directory(s.stations_file)
+    stations = [st for st in all_stations if not args.station or st.station_id in args.station]
+    if args.station or args.no_auxiliary:
+        auxiliary = []
     fmt = build_format(s)
     stored = None
     if args.target != "stdout":
@@ -71,8 +76,10 @@ def main() -> None:
     source = SimulatedSource(stations, timezone=s.analysis_timezone,
                              backfill_hours=s.simulator_backfill_hours,
                              realtime=not args.no_live, seed=s.simulator_seed,
-                             topic_prefix=s.ingest_topic_prefix, first_sequence=first, fmt=fmt)
-    print(f"simulating {len(stations)} stations ({type(fmt).__name__}) -> {args.target} "
+                             topic_prefix=s.ingest_topic_prefix, first_sequence=first, fmt=fmt,
+                             auxiliary=auxiliary)
+    print(f"simulating {len(stations)} stations + {len(auxiliary)} auxiliary sources "
+          f"({type(fmt).__name__}) -> {args.target} "
           f"({s.simulator_backfill_hours} h history{', then live' if not args.no_live else ''}); "
           "Ctrl+C to stop", file=sys.stderr)
     duration = args.duration * 60 if args.duration else None
