@@ -1,7 +1,9 @@
 """Message formats -> Measurement (the only code that knows the wire format).
 
 INGEST_PARSER selects the format:
-  telemetry_v1  the main server's MQTT contract (default; the simulator publishes it too)
+  ghmes         the main server's signal snapshots on topic ghmes/signal (default), see
+                app/ingestion/ghmes.py and data/mqtt/ghmes.json
+  telemetry_v1  the design document's MQTT contract
                 topic   maintenance/v1/{site_id}/{equipment_id}/telemetry   (QoS 1)
                 payload {"schema_version": "1", "message_id": "...", "source_sequence": 18427,
                          "site_id": "AS01", "equipment_id": "AS01-DET-01",
@@ -32,7 +34,7 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, Field
 
 from app.config import Settings
-from app.stations.model import OFF, ON, STATUS_CODES, DeviceStatus, Metric
+from app.stations.model import OFF, ON, STATUS_CODES, STATUS_METRICS, DeviceStatus, Metric
 from app.timeseries.iotdb import Measurement
 
 DOSE_RATE_UNITS = {"nGy/h": 1e-3, "uGy/h": 1.0, "µGy/h": 1.0, "μGy/h": 1.0, "mGy/h": 1e3}
@@ -127,7 +129,7 @@ def convert(metric: str, value: Any, unit: Any) -> float:
         m = Metric(metric)
     except ValueError as exc:
         raise Rejected("unknown_metric", str(metric)[:40]) from exc
-    if m == Metric.STATUS:
+    if m in STATUS_METRICS:
         return status_code(value)
     if m in _FLAG_METRICS:
         return flag(value)
@@ -162,6 +164,13 @@ class TelemetryV1Format:
                            for k, v in points.items() if v is not None]}
         return RawMessage("/".join([*self.prefix, site_id, equipment_id, "telemetry"]),
                           json.dumps(body, ensure_ascii=False).encode())
+
+    def encode_readings(self, station: Any, time: datetime,
+                        readings: list[tuple[str, dict[str, Any], dict[str, str]]]
+                        ) -> list[RawMessage]:
+        """One message per equipment unit (simulator)."""
+        return [self.encode(station.station_id, eq, time, points, units=units)
+                for eq, points, units in readings]
 
     # -- parsing -------------------------------------------------------------------------------
 
@@ -344,6 +353,10 @@ class MappingParser:
 
 
 def build_parser(s: Settings) -> Parser:
+    if s.ingest_parser == "ghmes":
+        from app.ingestion.ghmes import GhmesFormat
+
+        return GhmesFormat.from_settings(s)
     if s.ingest_parser in ("telemetry_v1", "simulator"):
         return TelemetryV1Format(s.ingest_topic_prefix)
     if s.ingest_parser == "mapping":
@@ -354,3 +367,13 @@ def build_parser(s: Settings) -> Parser:
         module, _, cls = s.ingest_parser.partition(":")
         return getattr(importlib.import_module(module), cls)(s)
     raise ValueError(f"unknown INGEST_PARSER {s.ingest_parser!r}")
+
+
+def build_format(s: Settings) -> "TelemetryV1Format | Any":
+    """The wire format the simulator publishes: ghmes or telemetry_v1 (also for custom
+    parsers, which the simulator cannot encode)."""
+    if s.ingest_parser == "ghmes":
+        from app.ingestion.ghmes import GhmesFormat
+
+        return GhmesFormat.from_settings(s)
+    return TelemetryV1Format(s.ingest_topic_prefix)

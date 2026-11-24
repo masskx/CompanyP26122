@@ -91,7 +91,7 @@ Edit `.env` to choose the model:
 # 4. openGauss tables (admin DSN only on the first run) + IoTDB series
 python scripts/init_db.py --admin-dsn "host=127.0.0.1 port=15432 dbname=postgres user=gaussdb password=Gauss@Local2026"
 
-# 5. simulated station data in the main server's MQTT contract (48 h, then live)
+# 5. simulated station data in the main server's MQTT format, ghmes/signal (48 h, then live)
 python scripts/simulate.py                 # keep it running (or --hours 26 --no-live)
 
 # 6. try the analysis the main server will call
@@ -111,6 +111,14 @@ python scripts/check.py --api http://127.0.0.1:8000
 With the frontend: start the Go `main_server` with
 `COMPUTE_SERVICE_BASE_URL=http://127.0.0.1:8000` (its `/api/v1/assistant/chat` proxies to this
 service), then `npm run dev` in `frontend/`.
+
+**Updating to the ghmes/signal format** (the MQTT administrator's message):
+1. In `.env`, set `INGEST_PARSER=ghmes` and `MQTT_TOPICS=["ghmes/signal"]` (or re-copy
+   `.env.example`).
+2. Run `python scripts/init_db.py --only iotdb`. It adds the new series: `station_status`,
+   `power_status`, the samplers, the monitoring vehicle and the weather tower.
+3. The MQTT watermark becomes a data time in epoch milliseconds. It only moves forward, so
+   existing data can stay.
 
 **Already ran the previous version?**
 1. Pull, then re-copy `.env.example` to `.env`; MQTT topics, parser and settings changed.
@@ -141,7 +149,7 @@ Everything is in `.env`; `.env.example` documents every setting.
 | Access | `COMPUTE_SERVICE_TOKEN` (Bearer, main server), `API_KEY` (X-API-Key, current Go proxy); both empty = open |
 | IoTDB | `IOTDB_HOST`, `IOTDB_PORT`, `IOTDB_USER`, `IOTDB_PASSWORD`, `IOTDB_ROOT` |
 | openGauss | `OPENGAUSS_DSN` (empty = in memory) |
-| MQTT | `MQTT_HOST`, `MQTT_TOPICS` (`maintenance/v1/#`), `MQTT_CLIENT_ID` (persistent session), `INGEST_PARSER=telemetry_v1` |
+| MQTT | `MQTT_HOST`, `MQTT_TOPICS` (`ghmes/signal`), `MQTT_CLIENT_ID` (persistent session), `INGEST_PARSER=ghmes`, `INGEST_GHMES_FILE` (field mapping) |
 | LLM | `LLM_PROVIDER` = `none` / `deepseek` / `vllm`, `LLM_BASE_URL` (or `VLLM_BASE_URL`), `LLM_MODEL` (or `VLLM_MODEL_NAME`), `LLM_API_KEY` (or `DEEPSEEK_API`) |
 | Analysis | `ANALYSIS_WATERMARK_WAIT_SECONDS`, `MAINTENANCE_*` versions / narrator, rule parameters `ANALYSIS_*`, `MES_API_BASE_URL` (history) |
 | Assistant | `ASSISTANT_INTENT_MODEL`, `REPORTS_DIR`, `SSE_HEARTBEAT_SECONDS` |
@@ -173,32 +181,40 @@ production uses the local vLLM and a private embedding service. vLLM must allow 
 - `GET /api/v1/health`: IoTDB, openGauss, stations, MQTT watermark, knowledge base, LLM and
   rule / catalogue versions.
 - `GET /api/v1/stations`, `/stations/{id}` (latest values), `/stations/{id}/telemetry`.
+- `GET /api/v1/auxiliary`, `/auxiliary/{id}` (latest values), `/auxiliary/{id}/telemetry?field=`:
+  the monitoring vehicle (M01) and the weather tower (MET01), stored as reported.
 - `GET /api/v1/knowledge`.
 
 ---
 
-## MQTT: simulator now, the main server later
+## MQTT: the main server's ghmes/signal snapshots
 
 ```text
-main server publisher (later) / scripts/simulate.py --target mqtt
-   -> Mosquitto -> scripts/ingest_mqtt.py -> IoTDB (+ watermark)
-scripts/simulate.py (default) writes straight to IoTDB
+main server -> Mosquitto ghmes/signal -> scripts/ingest_mqtt.py -> IoTDB (+ watermark)
+scripts/simulate.py --target mqtt publishes the same format; by default it writes straight
+to IoTDB through the same parser
 ```
 
-**The contract is the design document's:**
-- topic `maintenance/v1/{site_id}/{equipment_id}/telemetry`, QoS 1;
-- each message has a `message_id`, a monotonically increasing `source_sequence` and points with
-  quality flags.
+The format is the one the MQTT administrator sent: a JSON array with one snapshot per station,
+monitoring vehicle and weather tower, each with `dataTime` (local time) and `channels`
+(`fieldName`, `value`, `unit`, `commStatus`). [docs/mqtt-ghmes.md](docs/mqtt-ghmes.md)
+explains the mapping and the open questions. The mapping lives in `data/mqtt/ghmes.json`, so
+a renamed field or a new status code needs no code change.
 
-The simulator publishes exactly this. When the main server publishes it too, nothing here
-changes: run `python scripts/ingest_mqtt.py` with `MQTT_HOST` and `MQTT_CLIENT_ID` set.
+```bash
+python scripts/ingest_mqtt.py --file data/mqtt/ghmes.example.jsonl --dry-run   # the sample
+python scripts/ingest_mqtt.py --host <broker> --dry-run                         # the live feed
+python scripts/ingest_mqtt.py                                                   # store it
+```
 
-**If the real messages look different:**
-- describe them with a mapping file (`INGEST_PARSER=mapping`, see `data/mqtt/`); or
-- write a parser class (`INGEST_PARSER=module:Class`).
+The `--dry-run` statistics count what was not stored, e.g. `unmapped_field` or `unknown_code`.
+Send the main server's real messages through it before trusting the mapping.
 
-Test against captured messages without storing anything:
-`python scripts/ingest_mqtt.py --file captured.jsonl --dry-run`.
+**Other formats:**
+- `INGEST_PARSER=telemetry_v1`: the design document's contract, topic
+  `maintenance/v1/{site_id}/{equipment_id}/telemetry` with `source_sequence`;
+- `INGEST_PARSER=mapping`: another format described in a file (see `data/mqtt/`);
+- `INGEST_PARSER=module:Class`: your own parser class.
 
 ---
 

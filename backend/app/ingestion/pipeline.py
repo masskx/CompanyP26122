@@ -6,7 +6,9 @@ Sources (all deliver RawMessage(topic, payload)):
   FileSource        replays captured messages from a JSON Lines file
 Swapping the simulator for the real MQTT feed changes only the source (and the parser, if
 the real format differs from telemetry_v1). After each successful write the pipeline stores
-the highest `source_sequence` received as the consumption watermark (WATERMARK_SERIES).
+the highest `source_sequence` received (ghmes: the newest data time, epoch ms) as the
+consumption watermark (WATERMARK_SERIES). Start it from the stored value (`watermark=`) so
+late or replayed messages never move it backwards.
 """
 
 import asyncio
@@ -149,7 +151,8 @@ class Pipeline:
     def __init__(self, source: Source, parser: Parser, writer: Writer, *,
                  known_devices: set[tuple[str, str]] | None = None, batch_size: int = 500,
                  flush_seconds: float = 1.0, max_buffer: int = 100_000,
-                 max_future_skew: timedelta = timedelta(minutes=5)) -> None:
+                 max_future_skew: timedelta = timedelta(minutes=5),
+                 watermark: int | None = None) -> None:
         self.source, self.parser, self.writer = source, parser, writer
         self.known = known_devices
         self.batch_size, self.flush_seconds = batch_size, flush_seconds
@@ -158,8 +161,8 @@ class Pipeline:
         self._queue: asyncio.Queue[RawMessage | None] = asyncio.Queue(maxsize=10_000)
         self._buffer: list[Measurement] = []
         # highest source_sequence received / durably written (the consumption watermark)
-        self._pending_seq: int | None = None
-        self.watermark: int | None = None
+        self._pending_seq: int | None = watermark
+        self.watermark: int | None = watermark
 
     def _check(self, m: Measurement) -> None:
         if self.known is not None and (m.site, m.device_id) not in self.known:

@@ -24,6 +24,23 @@ class Window(BaseModel):
         return self
 
 
+def watermark_value(v: str) -> int:
+    """mqtt_watermark as a number: a source_sequence (telemetry_v1) or epoch milliseconds
+    (ghmes, whose watermark is the newest data time). An ISO time with a time zone is read
+    as epoch milliseconds, so the main server can send its data_cutoff."""
+    text = v.strip()
+    if text.isdigit():
+        return int(text)
+    try:
+        t = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        t = None
+    if t is None or t.tzinfo is None:
+        raise ValueError("mqtt_watermark must be a non-negative integer (sequence or epoch ms) "
+                         "or an ISO time with a time zone")
+    return int(t.timestamp() * 1000)
+
+
 class AnalysisRequest(BaseModel):
     analysis_id: str = Field(min_length=1, max_length=64, pattern=r"^[\w.:\-]+$")
     site_id: str = Field(min_length=1, max_length=64)
@@ -37,8 +54,8 @@ class AnalysisRequest(BaseModel):
     @field_validator("mqtt_watermark")
     @classmethod
     def _numeric(cls, v: str | None) -> str | None:
-        if v is not None and not v.strip().isdigit():
-            raise ValueError("mqtt_watermark must be a non-negative integer sequence")
+        if v is not None:
+            watermark_value(v)
         return v.strip() if v else v
 
 

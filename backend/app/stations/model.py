@@ -4,14 +4,20 @@ docs/原型/打开工作站.html: real-time monitoring, station detail, system m
 A station (site) has:
   * up to 20 gamma detectors (equipment type `detector`, e.g. AS01-DET-01)
   * one backup-power unit (`backup_power`, default <site>-BAT-01)
-  * one shelter / environment unit (`environment`, default <site>-ENV-01)
-Every sample arrives over MQTT (topic maintenance/v1/{site_id}/{equipment_id}/telemetry) and
-is stored in IoTDB at <IOTDB_ROOT>.<site_id>.<equipment_id>.<metric>.
+  * one shelter / environment unit (`environment`, default <site>-ENV-01): the station house,
+    its overall status (总状态) and the samplers (碳 / 氚取样)
+Samples arrive over MQTT (the main server's ghmes/signal snapshots, app/ingestion/ghmes.py,
+or the telemetry_v1 contract) and are stored in IoTDB at
+<IOTDB_ROOT>.<site_id>.<equipment_id>.<metric>.
+
+Auxiliary sources (the monitoring vehicle, the weather tower) are not stations: they have no
+thresholds and no maintenance rules. Their channels are stored as reported at
+<IOTDB_ROOT>.<source_id>.<equipment_id>.<field> (AuxiliarySource).
 
 What goes where:
   IoTDB (time series)   every received sample of the METRICS below
-  station file          the station directory and thresholds (STATIONS_FILE, a versioned
-                        snapshot of the main server's configuration; not in openGauss)
+  station file          the station directory, thresholds and auxiliary sources (STATIONS_FILE,
+                        a versioned snapshot of the main server's configuration; not in openGauss)
   openGauss             only conversations and the copy of work orders (see app/db)
 Statuses and flags are numeric codes (STATUS_CODES, ON / OFF) so every metric is one DOUBLE
 series.
@@ -61,21 +67,28 @@ class Metric(StrEnum):
     AC_POWER = "ac_power"                # 1 = mains (市电), 0 = on battery (电池)
     CHARGING = "charging"                # 1 = charging
     RUNTIME_HOURS = "runtime_hours"      # reference runtime estimated by the station (if any)
+    POWER_STATUS = "power_status"        # vendor power-status code (电源状态), as reported
     # environment / shelter
     SHELTER_TEMP = "shelter_temp"        # °C
     SHELTER_HUMIDITY = "shelter_humidity"  # %RH
     DOOR = "door"                        # 1 = open
     RAINFALL = "rainfall"                # mm per sample period (if a rain gauge exists)
+    STATION_STATUS = "station_status"    # overall station status (总状态), STATUS_CODES
+    CARBON_SAMPLER = "carbon_sampler"    # vendor code of the C-14 sampler (碳取样状态)
+    TRITIUM_SAMPLER = "tritium_sampler"  # vendor code of the H-3 sampler (氚取样状态)
 
 
 METRICS_BY_TYPE: dict[EquipmentType, tuple[Metric, ...]] = {
     EquipmentType.DETECTOR: (Metric.DOSE_RATE, Metric.DOSE_RATE_AVG, Metric.DOSE_RATE_STD,
                              Metric.STATUS, Metric.COMM),
     EquipmentType.BACKUP_POWER: (Metric.BATTERY_VOLTAGE, Metric.BATTERY_LEVEL, Metric.AC_POWER,
-                                 Metric.CHARGING, Metric.RUNTIME_HOURS),
+                                 Metric.CHARGING, Metric.RUNTIME_HOURS, Metric.POWER_STATUS),
     EquipmentType.ENVIRONMENT: (Metric.SHELTER_TEMP, Metric.SHELTER_HUMIDITY, Metric.DOOR,
-                                Metric.RAINFALL),
+                                Metric.RAINFALL, Metric.STATION_STATUS, Metric.CARBON_SAMPLER,
+                                Metric.TRITIUM_SAMPLER),
 }
+STATUS_METRICS = (Metric.STATUS, Metric.STATION_STATUS)  # values are STATUS_CODES
+VENDOR_CODE_METRICS = (Metric.POWER_STATUS, Metric.CARBON_SAMPLER, Metric.TRITIUM_SAMPLER)
 METRIC_TYPE = {m: t for t, ms in METRICS_BY_TYPE.items() for m in ms}
 UNITS = {Metric.DOSE_RATE: "µGy/h", Metric.DOSE_RATE_AVG: "µGy/h", Metric.DOSE_RATE_STD: "µGy/h",
          Metric.BATTERY_VOLTAGE: "V", Metric.BATTERY_LEVEL: "%", Metric.RUNTIME_HOURS: "h",
@@ -86,7 +99,9 @@ METRIC_LABELS = {Metric.DOSE_RATE: "γ瞬时值", Metric.DOSE_RATE_AVG: "γ平�
                  Metric.BATTERY_LEVEL: "电池电量", Metric.AC_POWER: "外部交流供电",
                  Metric.CHARGING: "充电状态", Metric.RUNTIME_HOURS: "参考续航",
                  Metric.SHELTER_TEMP: "方舱温度", Metric.SHELTER_HUMIDITY: "方舱湿度",
-                 Metric.DOOR: "方舱门", Metric.RAINFALL: "雨量"}
+                 Metric.DOOR: "方舱门", Metric.RAINFALL: "雨量", Metric.POWER_STATUS: "电源状态",
+                 Metric.STATION_STATUS: "总状态", Metric.CARBON_SAMPLER: "碳取样状态",
+                 Metric.TRITIUM_SAMPLER: "氚取样状态"}
 
 
 class StationDevice(BaseModel):
@@ -195,3 +210,40 @@ class Station(BaseModel):
                 for m in METRICS_BY_TYPE[EquipmentType.BACKUP_POWER]]
         return out + [(self.station_id, self.environment_id, m.value)  # type: ignore[misc]
                       for m in METRICS_BY_TYPE[EquipmentType.ENVIRONMENT]]
+
+
+# ---- auxiliary sources (monitoring vehicle, weather tower) ----------------------------------
+
+FIELD_PATTERN = r"^[A-Za-z0-9_\-]{1,64}$"
+
+
+class AuxiliaryChannel(BaseModel):
+    field: str = Field(pattern=FIELD_PATTERN)   # stored metric name (the feed's fieldName)
+    label: str                                   # e.g. 10米风速
+    unit: str | None = None
+
+
+class AuxiliarySource(BaseModel):
+    """A monitored object without maintenance rules; its channels are stored as reported."""
+
+    source_id: str = Field(pattern=ID_PATTERN)  # e.g. M01, MET01
+    name: str
+    kind: Literal["vehicle", "weather_tower", "other"] = "other"
+    equipment_id: str | None = Field(default=None, pattern=ID_PATTERN)  # default <id>-01
+    channels: list[AuxiliaryChannel] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check(self) -> "AuxiliarySource":
+        self.equipment_id = self.equipment_id or f"{self.source_id}-01"
+        fields = [c.field for c in self.channels]
+        if len(set(fields)) != len(fields):
+            raise ValueError(f"{self.source_id}: duplicate channel field")
+        return self
+
+    def channel(self, field: str) -> AuxiliaryChannel | None:
+        return next((c for c in self.channels if c.field == field), None)
+
+    def series(self) -> list[tuple[str, str, str]]:
+        """Declared channels plus `comm` (1 = ok, 0 = communication fault)."""
+        return [(self.source_id, self.equipment_id, f)  # type: ignore[misc]
+                for f in [c.field for c in self.channels] + ["comm"]]

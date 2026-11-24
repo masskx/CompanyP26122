@@ -99,15 +99,17 @@ class Settings(BaseSettings):
     # ---- Ingestion (simulator / MQTT -> IoTDB) -------------------------------------------
     mqtt_host: str = "127.0.0.1"
     mqtt_port: int = 1883
-    mqtt_topics: list[str] = Field(default_factory=lambda: ["maintenance/v1/#"])
+    mqtt_topics: list[str] = Field(default_factory=lambda: ["ghmes/signal"])
     mqtt_username: str | None = None
     mqtt_password: SecretStr | None = None
     mqtt_tls: bool = False
     mqtt_client_id: str | None = None
     mqtt_qos: int = 1
-    # Message format: "telemetry_v1" (main server contract), "mapping" (JSON file) or
+    # Message format: "ghmes" (the main server's ghmes/signal snapshots, read through
+    # INGEST_GHMES_FILE), "telemetry_v1" (design-document contract), "mapping" (JSON file) or
     # "module:Class".
-    ingest_parser: str = "telemetry_v1"
+    ingest_parser: str = "ghmes"
+    ingest_ghmes_file: Path = BASE_DIR / "data" / "mqtt" / "ghmes.json"
     ingest_mapping_file: Path | None = None
     ingest_topic_prefix: str = "maintenance/v1"
     ingest_batch_size: int = 500

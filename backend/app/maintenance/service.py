@@ -36,6 +36,7 @@ from app.maintenance.schemas import (
     ModelVersion,
     Versions,
     Window,
+    watermark_value,
 )
 from app.stations.model import Station
 from app.stations.service import StationService
@@ -138,7 +139,7 @@ class MaintenanceService:
     async def _wait_watermark(self, requested: str | None) -> None:
         if requested is None:
             return
-        target = int(requested)
+        target = watermark_value(requested)
         deadline = time.monotonic() + self.s.analysis_watermark_wait_seconds
         while True:
             try:

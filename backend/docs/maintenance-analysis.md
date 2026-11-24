@@ -5,8 +5,8 @@ Implements `docs/项目规划/设计文档.md` §3.1 and §4.2, with the additio
 ## Who does what
 
 ```text
-data acquisition -> main server DB -> MQTT maintenance/v1/{site}/{equipment}/telemetry -> this
-service's IoTDB (+ consumption watermark)
+data acquisition -> main server DB -> MQTT ghmes/signal (or maintenance/v1/.../telemetry) ->
+this service's IoTDB (+ consumption watermark)
 
 main server timer -> POST /internal/v1/maintenance/analyses (window, data_cutoff, watermark)
                   <- 200 structured result (health_level, explanation, findings, actions,
@@ -35,7 +35,9 @@ main server -> PUT /internal/v1/maintenance/work-orders/{event_id}   (copy kept 
   1. **Idempotency.** The same key returns the same result, and concurrent duplicates share one
      execution. The same key with a different body gives 409 `idempotency_conflict`.
   2. **Watermark.** The service waits up to `ANALYSIS_WATERMARK_WAIT_SECONDS` for the local
-     watermark to reach `mqtt_watermark`. If it doesn't, the answer is 503
+     watermark to reach `mqtt_watermark`: a `source_sequence` (telemetry_v1), or, with
+     ghmes/signal, the data time in epoch ms or as an ISO time with a zone (e.g. the
+     `data_cutoff`). If it doesn't, the answer is 503
      `watermark_not_reached` (`retryable: true`, with both watermarks). Without
      `mqtt_watermark` the analysis runs on what is stored (development).
   3. **Window.** The analysis covers `[start, min(end, data_cutoff)]`, at most
@@ -146,23 +148,33 @@ any finding → `watch`; no finding → `normal`.
     valid-until).
   - **Equipment IDs:** `<site>-DET-xx` for detectors, `<site>-BAT-01` for backup power,
     `<site>-ENV-01` for the shelter / environment unit.
-- **Telemetry, topic `maintenance/v1/{site_id}/{equipment_id}/telemetry`, QoS 1:**
-  - **Payload:** `schema_version`, `message_id`, `source_sequence`, `site_id`, `equipment_id`,
-    `event_time`, and `points[{metric, value, unit, quality}]`.
+- **MQTT, current feed: `ghmes/signal`.** These are the main server's snapshots in the
+  administrator's format: one array element per station, monitoring vehicle and weather tower.
+  [mqtt-ghmes.md](mqtt-ghmes.md) gives the mapping, communication faults, the auxiliary
+  sources and the open questions.
+  - The station-level additions are `station_status` (总状态), `power_status`,
+    `carbon_sampler` and `tritium_sampler`.
+  - The feed has no battery voltage or shelter data, so backup-power rules report
+    `insufficient_data` until it does.
+- **MQTT, the design document's contract (`INGEST_PARSER=telemetry_v1`):** topic
+  `maintenance/v1/{site_id}/{equipment_id}/telemetry`, QoS 1.
+  - **Payload:** `schema_version`, `message_id`, `source_sequence`, `site_id`,
+    `equipment_id`, `event_time`, and `points[{metric, value, unit, quality}]`.
   - **Metrics:**
 
     | Unit | Metrics |
     | --- | --- |
     | Detector | `dose_rate`, `dose_rate_avg`, `dose_rate_std`, `status` (normal / h1 / h2 / fault / offline), `comm` |
-    | Backup power | `battery_voltage`, `battery_level`, `ac_power`, `charging`, `runtime_hours` |
-    | Environment | `shelter_temp`, `shelter_humidity`, `door`, `rainfall` |
+    | Backup power | `battery_voltage`, `battery_level`, `ac_power`, `charging`, `runtime_hours`, `power_status` |
+    | Environment | `shelter_temp`, `shelter_humidity`, `door`, `rainfall`, `station_status`, `carbon_sampler`, `tritium_sampler` |
 
-  - **Units:** dose rates in nGy/h, µGy/h or mGy/h, stored as µGy/h. Sievert units are
-    rejected (the plant must confirm the conversion).
   - **Quality:** `bad` points are dropped and counted.
+- **Units:** dose rates in nGy/h, µGy/h or mGy/h, stored as µGy/h. Sievert units are rejected
+  for stations (the plant must confirm the conversion).
 - **Watermark:** after each successful write, the ingester stores the highest
-  `source_sequence` it has consumed (rejected messages count as consumed) in
-  `root.mes._sys.ingest.watermark`.
+  `source_sequence` (ghmes: the newest `dataTime`, epoch ms) in
+  `root.mes._sys.ingest.watermark`. It starts from the stored value and never moves
+  backwards. Rejected messages count as consumed.
 
 ## Demo scenario (`data/stations.json`, synthetic, relative to the simulator start)
 
@@ -191,7 +203,8 @@ any finding → `watch`; no finding → `normal`.
    the fallback.
 3. **Thresholds are synthetic.** The real per-station thresholds, background values, runtimes
    and charge times must come from the main server.
-4. **The main server's MQTT publisher** must provide the monotonically increasing
-   `source_sequence` that the watermark relies on.
+4. **The MQTT feed.** ghmes/signal carries no `source_sequence`, so the watermark is the
+   data time. The status codes, the missing backup-power and shelter channels, and the units
+   are listed in [mqtt-ghmes.md](mqtt-ghmes.md).
 5. **`health_level: normal`** is returned when no rule fires. Should the main server receive it,
    or an empty 204?

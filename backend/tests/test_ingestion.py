@@ -121,7 +121,11 @@ def test_mapping_example_format():
 
 def test_build_parser_choices():
     s = Settings(_env_file=None)
-    assert isinstance(build_parser(s), TelemetryV1Format)
+    from app.ingestion.ghmes import GhmesFormat
+
+    assert isinstance(build_parser(s), GhmesFormat)  # the default
+    v1 = s.model_copy(update={"ingest_parser": "telemetry_v1"})
+    assert isinstance(build_parser(v1), TelemetryV1Format)
     mapped = s.model_copy(update={"ingest_parser": "mapping",
                                   "ingest_mapping_file": MQTT / "mapping.example.json"})
     assert isinstance(build_parser(mapped), MappingParser)

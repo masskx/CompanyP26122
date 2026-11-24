@@ -2,8 +2,10 @@
 """MQTT -> IoTDB ingestion (production path). Runs until Ctrl+C / SIGTERM.
 
   python scripts/ingest_mqtt.py                                   # settings from .env
-                                    # (default: telemetry_v1 on maintenance/v1/#)
+                                    # (default: ghmes on ghmes/signal, data/mqtt/ghmes.json)
   python scripts/ingest_mqtt.py --dry-run                         # print, store nothing
+  python scripts/ingest_mqtt.py --file data/mqtt/ghmes.example.jsonl --dry-run
+                                                                  # check the ghmes profile
   python scripts/ingest_mqtt.py --host 10.0.0.5 --topics "plant/#" --parser mapping \
       --mapping my_mapping.json --dry-run                         # inspect the real feed
   python scripts/ingest_mqtt.py --file captured.jsonl --dry-run --parser mapping \
@@ -27,8 +29,8 @@ from app.ingestion.pipeline import (
     run,
     run_until_stopped,
 )
-from app.stations.store import load_file
-from app.timeseries.iotdb import IoTDB
+from app.stations.store import known_equipment
+from app.timeseries.iotdb import WATERMARK_SERIES, IoTDB, TimeSeriesError
 
 
 def main() -> None:
@@ -36,7 +38,8 @@ def main() -> None:
     p.add_argument("--host")
     p.add_argument("--port", type=int)
     p.add_argument("--topics", help="comma-separated, e.g. 'plant/#'")
-    p.add_argument("--parser", help="simulator | mapping | module:Class")
+    p.add_argument("--parser", help="ghmes | telemetry_v1 | mapping | module:Class")
+    p.add_argument("--ghmes-profile", type=Path, help="profile for --parser ghmes")
     p.add_argument("--mapping", type=Path, help="mapping file for --parser mapping")
     p.add_argument("--file", type=Path, help="replay captured JSON Lines instead of MQTT")
     p.add_argument("--dry-run", action="store_true")
@@ -45,11 +48,11 @@ def main() -> None:
     args = p.parse_args()
     s = _common.settings(args, mqtt_host=args.host, mqtt_port=args.port,
                          mqtt_topics=args.topics.split(",") if args.topics else None,
-                         ingest_parser=args.parser, ingest_mapping_file=args.mapping)
+                         ingest_parser=args.parser, ingest_mapping_file=args.mapping,
+                         ingest_ghmes_file=args.ghmes_profile)
     known = None
     if not args.accept_unknown_devices and s.ingest_reject_unknown_devices:
-        known = {(st.station_id, eq) for st in load_file(s.stations_file)
-                 for eq in st.equipment_ids()}
+        known = known_equipment(s.stations_file)
     if args.file:
         source = FileSource(args.file)
     else:
@@ -61,9 +64,16 @@ def main() -> None:
         print(f"subscribing {s.mqtt_topics} at {s.mqtt_host}:{s.mqtt_port} "
               f"(parser={s.ingest_parser}); Ctrl+C to stop", file=sys.stderr)
     db = IoTDB(s)
+    stored = None
+    if not args.dry_run:  # never move the stored watermark backwards (replays, late data)
+        try:
+            latest = run(db.latest(*WATERMARK_SERIES))
+            stored = int(latest.value) if latest and latest.value is not None else None
+        except TimeSeriesError as exc:
+            sys.exit(f"IoTDB not reachable: {exc}")
     pipeline = Pipeline(source, build_parser(s), StdoutWriter() if args.dry_run else db,
                         known_devices=known, batch_size=s.ingest_batch_size,
-                        flush_seconds=s.ingest_flush_seconds)
+                        flush_seconds=s.ingest_flush_seconds, watermark=stored)
 
     async def go() -> None:
         try:

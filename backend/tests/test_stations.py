@@ -43,7 +43,7 @@ def test_equipment_and_series():
         s.node_for(Metric.DOSE_RATE)
     series = s.series()
     assert ("S1", "S1-DET-02", "dose_rate_std") in series and ("S1", "S1-ENV-01", "door") \
-        in series and len(series) == 2 * 5 + 5 + 4
+        in series and len(series) == 2 * 5 + 6 + 7
 
 
 async def test_file_store_reloads(tmp_path, stations):

@@ -1,8 +1,11 @@
 """Synthetic fixed-station data (development / demonstration only, NOT plant data).
 
-Publishes the telemetry_v1 contract: one message per equipment unit and sampling instant,
-topic maintenance/v1/{site_id}/{equipment_id}/telemetry, with a global, monotonically
-increasing source_sequence (what the main server's MQTT publisher provides).
+Publishes either wire format (INGEST_PARSER):
+  ghmes         one ghmes/signal snapshot per station and sampling instant, read back through
+                the ghmes profile (metrics without a channel in the profile are not sent)
+  telemetry_v1  one message per equipment unit and sampling instant, topic
+                maintenance/v1/{site_id}/{equipment_id}/telemetry, with a global, monotonically
+                increasing source_sequence
 
 Profiles live in data/stations.json ("simulation" blocks, never used by the analysis).
 Scripted events either start `ago_hours` before the simulator starts, or at a local clock
@@ -30,10 +33,19 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 from app.ingestion.parsers import RawMessage, TelemetryV1Format
 from app.stations.model import Station, StationDevice
+
+Readings = list[tuple[str, dict[str, Any], dict[str, str]]]  # equipment id, points, units
+_SEVERITY = {"normal": 0, "h1": 1, "h2": 2, "offline": 3, "fault": 4}
+
+
+class WireFormat(Protocol):
+    def encode_readings(self, station: Station, time: datetime, readings: Readings
+                        ) -> list[RawMessage]: ...
 
 
 @dataclass
@@ -182,7 +194,7 @@ class StationSimulator:
                 round(max(0.0, min(100.0, (min(v, self.rest_v) - 10.8) / 1.2 * 100)), 1)
         return out
 
-    def messages(self, fmt: TelemetryV1Format) -> tuple[datetime, list[RawMessage]]:
+    def messages(self, fmt: WireFormat) -> tuple[datetime, list[RawMessage]]:
         t = self.next_time
         self.next_time = t + self.step
         st = self.station
@@ -199,18 +211,22 @@ class StationSimulator:
                "door": "open" if _active(self.spans, t, "door_open") else "closed"}
         if st.has_rain_gauge:
             env["rainfall"] = round(rain_mm_h * self.step.total_seconds() / 3600, 3)
-        out = []
+        readings: Readings = []
+        statuses = []
         for d in self.detectors:
             points = d.sample(t, rain_mm_h)
             if points is not None:
-                out.append(fmt.encode(st.station_id, d.device.device_id, t, points,
-                                      units={"dose_rate": "uGy/h", "dose_rate_avg": "uGy/h",
-                                             "dose_rate_std": "uGy/h"}))
-        out.append(fmt.encode(st.station_id, st.backup_power_id, t, battery,  # type: ignore[arg-type]
-                              units={"battery_voltage": "V", "battery_level": "%",
-                                     "runtime_hours": "h"}))
-        out.append(fmt.encode(st.station_id, st.environment_id, t, env))  # type: ignore[arg-type]
-        return t, out
+                statuses.append(points.get("status", "offline"))
+                readings.append((d.device.device_id, points,
+                                 {"dose_rate": "μGy/h", "dose_rate_avg": "μGy/h",
+                                  "dose_rate_std": "μGy/h"}))
+        # overall station status (总状态): the worst detector status; samplers report 0
+        env["station_status"] = max(statuses, key=_SEVERITY.__getitem__, default="offline")
+        env["carbon_sampler"] = env["tritium_sampler"] = 0
+        readings.append((st.backup_power_id, battery,  # type: ignore[arg-type]
+                         {"battery_voltage": "V", "battery_level": "%", "runtime_hours": "h"}))
+        readings.append((st.environment_id, env, {}))  # type: ignore[arg-type]
+        return t, fmt.encode_readings(st, t, readings)
 
 
 class SimulatedSource:
@@ -220,18 +236,20 @@ class SimulatedSource:
                  backfill_hours: float = 48, realtime: bool = True, seed: int | None = 42,
                  topic_prefix: str = "maintenance/v1", live_days: int = 30,
                  clock: Callable[[], datetime] = lambda: datetime.now(UTC),
-                 first_sequence: int = 1) -> None:
+                 first_sequence: int = 1, fmt: WireFormat | None = None) -> None:
         self.stations = stations
         self.tz = ZoneInfo(timezone)
         self.backfill = timedelta(hours=backfill_hours)
         self.realtime, self.seed, self.live_days = realtime, seed, live_days
-        self.format = TelemetryV1Format(topic_prefix)
-        self.format._seq = first_sequence - 1
+        self.format = fmt or TelemetryV1Format(topic_prefix)
+        if isinstance(self.format, TelemetryV1Format):
+            self.format._seq = first_sequence - 1
         self.clock = clock
 
     @property
     def last_sequence(self) -> int:
-        return self.format._seq
+        """Last source_sequence sent (telemetry_v1; ghmes has none and returns 0)."""
+        return getattr(self.format, "_seq", 0)
 
     async def run(self, emit: Callable[[RawMessage], Awaitable[None]]) -> None:
         anchor = self.clock()
