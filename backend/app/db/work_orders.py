@@ -2,7 +2,9 @@
 openGauss 也存储一份，这个你要预留一个接口").
 
 The main server stays authoritative: it creates work orders from analysis results and pushes
-each create / update / review here (PUT /internal/v1/maintenance/work-orders/{event_id}).
+each create / update / review here (PUT /internal/v1/maintenance/work-orders/{event_id}), or
+only the latest review / archive conclusion (PUT .../work-orders/{event_id}/review, set_review).
+Each work order keeps exactly one review (the latest); there is no review history.
 The copy is read by the analysis history rules and by the assistant. No user identity is
 stored (reviewer ids are not accepted), matching the de-identified history contract.
 """
@@ -21,6 +23,7 @@ class Review(BaseModel):
     comment: str = Field(default="", max_length=2000)
     reviewed_at: datetime
     updated_at: datetime | None = None
+    archived_at: datetime | None = None
 
 
 class WorkOrder(BaseModel):
@@ -42,6 +45,11 @@ class WorkOrderStore(Protocol):
     async def ping(self) -> None: ...
     async def upsert(self, wo: WorkOrder) -> str: ...
     async def get(self, event_id: str) -> WorkOrder | None: ...
+    async def set_review(self, event_id: str, review: Review, status: str,
+                         updated_at: datetime) -> str:
+        """Replace the review only. "updated", "stale" (updated_at older than the stored one)
+        or "not_found"."""
+        ...
     async def list(self, site_id: str | None, equipment_id: str | None, start: datetime | None,
                    end: datetime | None, limit: int, offset: int = 0) -> list[WorkOrder]: ...
     async def close(self) -> None: ...
@@ -69,6 +77,18 @@ class MemoryWorkOrderStore:
 
     async def get(self, event_id: str) -> WorkOrder | None:
         return self.items.get(event_id)
+
+    async def set_review(self, event_id: str, review: Review, status: str,
+                         updated_at: datetime) -> str:
+        old = self.items.get(event_id)
+        if old is None:
+            return "not_found"
+        if old.updated_at is not None and updated_at < old.updated_at:
+            return "stale"
+        self.items[event_id] = old.model_copy(update={
+            "review": review, "status": status, "updated_at": updated_at,
+            "received_at": datetime.now(UTC)})
+        return "updated"
 
     async def list(self, site_id, equipment_id, start, end, limit, offset=0):
         items = [w for w in self.items.values()
@@ -135,6 +155,23 @@ class PgWorkOrderStore:
                 f"SELECT {_COLS} FROM maintenance_work_order WHERE event_id = %s",
                 (event_id,))).fetchone()
         return _row(row) if row else None
+
+    async def set_review(self, event_id: str, review: Review, status: str,
+                         updated_at: datetime) -> str:
+        async with await self._pool.connection() as conn, conn.transaction():
+            row = await (await conn.execute(
+                "SELECT source_updated_at FROM maintenance_work_order WHERE event_id = %s "
+                "FOR UPDATE", (event_id,))).fetchone()
+            if row is None:
+                return "not_found"
+            stored = row["source_updated_at"]
+            if stored is not None and updated_at < stored:
+                return "stale"
+            await conn.execute(
+                "UPDATE maintenance_work_order SET review = %s, status = %s, "
+                "source_updated_at = %s, received_at = %s WHERE event_id = %s",
+                (review.model_dump_json(), status, updated_at, datetime.now(UTC), event_id))
+            return "updated"
 
     async def list(self, site_id, equipment_id, start, end, limit, offset=0):
         where, params = ["1 = 1"], []

@@ -169,6 +169,7 @@ production uses the local vLLM and a private embedding service. vLLM must allow 
 | --- | --- | --- |
 | POST | `/internal/v1/maintenance/analyses` | synchronous analysis (design doc §4.2) |
 | PUT | `/internal/v1/maintenance/work-orders/{event_id}` | push a work order / published result / review (copy) |
+| PUT | `/internal/v1/maintenance/work-orders/{event_id}/review` | only the latest review / archive conclusion of an existing copy (404 / 409 stale) |
 | GET | `/internal/v1/maintenance/work-orders[/{event_id}]` | read the copy |
 | POST | `/internal/v1/assistant/chat` | assistant SSE (same as `/api/v1/chat`) |
 
