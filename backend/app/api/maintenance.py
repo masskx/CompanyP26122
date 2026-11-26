@@ -3,15 +3,19 @@
 POST /internal/v1/maintenance/analyses              synchronous analysis (no SSE, nothing stored)
 PUT  /internal/v1/maintenance/work-orders/{id}      reserved: the main server pushes its work
                                                     orders / published results / reviews here
+PUT  /internal/v1/maintenance/work-orders/{id}/review   only the latest review / archive
+                                                    conclusion of an existing copy
 GET  /internal/v1/maintenance/work-orders[/{id}]    read the copy (debugging, assistant)
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
+from pydantic import AwareDatetime, BaseModel, Field
 
-from app.db.work_orders import WorkOrder
+from app.db.work_orders import Review, WorkOrder
 from app.deps import Resources, get_resources
 from app.maintenance.schemas import AnalysisError, AnalysisRequest, AnalysisResult
 
@@ -60,3 +64,48 @@ async def list_work_orders(site_id: str | None = None, equipment_id: str | None 
                            r: Resources = Depends(get_resources)):
     items = await r.work_orders.list(site_id, equipment_id, start, end, limit, offset)
     return {"items": items, "next_offset": offset + len(items) if len(items) == limit else None}
+
+
+class ReviewSubmission(BaseModel):
+    """The latest human review / archive conclusion. Times must include a time zone; omitted
+    ones default to now (archived_at: see put_review). Reviewer identity is not accepted:
+    unknown fields such as reviewed_by are ignored and never stored."""
+
+    outcome: Literal["accurate", "needs_revision"]
+    comment: str = Field(default="", max_length=2000)
+    reviewed_at: AwareDatetime | None = None
+    updated_at: AwareDatetime | None = None
+    archived_at: AwareDatetime | None = None
+
+
+@router.put("/work-orders/{event_id}/review", response_model=WorkOrder)
+async def put_review(event_id: str, body: ReviewSubmission,
+                     r: Resources = Depends(get_resources)):
+    """Replace the review of an existing work-order copy (one review per event, no history)
+    and mark it confirmed. archived_at defaults to reviewed_at on the first archive and is
+    kept from the copy on later edits. Errors: 404 work_order_not_found, 409 stale_review
+    (updated_at older than the copy's), 422 invalid body or a time without a time zone."""
+    current = await r.work_orders.get(event_id)
+    if current is None:
+        return _not_found(event_id)
+    now = datetime.now(UTC)
+    reviewed_at = body.reviewed_at or now
+    updated_at = body.updated_at or now
+    previous = current.review.archived_at if current.review else None
+    review = Review(outcome=body.outcome, comment=body.comment, reviewed_at=reviewed_at,
+                    updated_at=updated_at, archived_at=body.archived_at or previous or reviewed_at)
+    result = await r.work_orders.set_review(event_id, review, "confirmed", updated_at)
+    if result == "not_found":  # deleted between the read and the update
+        return _not_found(event_id)
+    if result == "stale":
+        return JSONResponse({"code": "stale_review",
+                             "message": "updated_at is older than the stored copy; the review "
+                                        "was not changed", "event_id": event_id},
+                            status_code=409)
+    return await r.work_orders.get(event_id)
+
+
+def _not_found(event_id: str) -> JSONResponse:
+    return JSONResponse({"code": "work_order_not_found",
+                         "message": f"work order {event_id} not found", "event_id": event_id},
+                        status_code=404)

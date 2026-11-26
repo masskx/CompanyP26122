@@ -199,3 +199,98 @@ def test_narration_validation():
                      ("[]", "explanation")]:
         with pytest.raises(InvalidNarration, match=why):
             parse(raw, evidence, ["a"], 100)
+
+
+def work_order(event_id: str, updated_at: str = "2026-11-25T08:00:00+08:00", **kw) -> dict:
+    return {"event_id": event_id, "site_id": "AS06", "equipment_id": "AS06-BAT-01",
+            "risk_type": "backup_power", "health_level": "inspect", "status": "pending",
+            "triggered_at": "2026-11-25T06:00:00+08:00", "analysis_id": "ma-rv",
+            "ai_result": {"explanation": "参考续航下降"}, "updated_at": updated_at, **kw}
+
+
+async def test_review_endpoint(internal):
+    assert (await internal.put("/maintenance/work-orders/rv-1",
+                               json=work_order("rv-1"))).json()["result"] == "created"
+    first = {"outcome": "accurate", "comment": "现场核实，结论一致",
+             "reviewed_at": "2026-11-26T10:00:00+08:00",
+             "updated_at": "2026-11-26T10:00:00+08:00", "reviewed_by": "zhang.san"}
+    r = await internal.put("/maintenance/work-orders/rv-1/review", json=first)
+    assert r.status_code == 200, r.text
+    wo = r.json()
+    assert wo == (await internal.get("/maintenance/work-orders/rv-1")).json()  # same as GET
+    assert wo["status"] == "confirmed" and wo["ai_result"] == {"explanation": "参考续航下降"}
+    assert wo["review"] == {"outcome": "accurate", "comment": "现场核实，结论一致",
+                            "reviewed_at": "2026-11-26T10:00:00+08:00",
+                            "updated_at": "2026-11-26T10:00:00+08:00",
+                            "archived_at": "2026-11-26T10:00:00+08:00"}  # first archive
+    assert wo["updated_at"] == "2026-11-26T10:00:00+08:00" and wo["received_at"]
+    assert "zhang.san" not in r.text  # reviewer identity is never stored
+
+    # edit after archiving: same record, archived_at kept
+    edit = {"outcome": "needs_revision", "comment": "补充：充电模块待复核",
+            "reviewed_at": "2026-11-26T15:00:00+08:00",
+            "updated_at": "2026-11-26T15:00:00+08:00"}
+    wo = (await internal.put("/maintenance/work-orders/rv-1/review", json=edit)).json()
+    assert wo["review"]["outcome"] == "needs_revision"
+    assert wo["review"]["archived_at"] == "2026-11-26T10:00:00+08:00"
+    assert wo["updated_at"] == "2026-11-26T15:00:00+08:00"
+    listed = (await internal.get("/maintenance/work-orders", params={"site_id": "AS06"})).json()
+    assert [w["event_id"] for w in listed["items"]] == ["rv-1"]
+
+    # an explicit archived_at replaces it
+    wo = (await internal.put("/maintenance/work-orders/rv-1/review", json={
+        **edit, "archived_at": "2026-11-26T16:00:00+08:00"})).json()
+    assert wo["review"]["archived_at"] == "2026-11-26T16:00:00+08:00"
+
+    # older updated_at: 409, nothing changed; equal is allowed
+    r = await internal.put("/maintenance/work-orders/rv-1/review", json=first)
+    assert r.status_code == 409 and r.json()["code"] == "stale_review" and r.json()["message"]
+    assert (await internal.get("/maintenance/work-orders/rv-1")).json()["review"]["outcome"] \
+        == "needs_revision"
+    r = await internal.put("/maintenance/work-orders/rv-1/review",
+                           json={**edit, "outcome": "accurate"})
+    assert r.status_code == 200 and r.json()["review"]["outcome"] == "accurate"
+
+    # unknown event: 404
+    r = await internal.put("/maintenance/work-orders/rv-404/review", json=edit)
+    assert r.status_code == 404 and r.json()["code"] == "work_order_not_found"
+    assert r.json()["message"]
+
+    # validation: naive times, unknown outcome, too long comment
+    for bad in ({**edit, "reviewed_at": "2026-11-26T10:00:00"},
+                {**edit, "updated_at": "2026-11-26T10:00:00"},
+                {**edit, "archived_at": "2026-11-26T10:00:00"},
+                {**edit, "outcome": "ok"}, {**edit, "comment": "x" * 2001},
+                {"comment": "no outcome"}):
+        assert (await internal.put("/maintenance/work-orders/rv-1/review",
+                                   json=bad)).status_code == 422, bad
+
+    # the full PUT still accepts a work order with a review
+    full = work_order("rv-1", updated_at="2026-11-27T09:00:00+08:00", status="confirmed",
+                      review={"outcome": "needs_revision", "comment": "主服务器全量推送",
+                              "reviewed_at": "2026-11-27T09:00:00+08:00"})
+    assert (await internal.put("/maintenance/work-orders/rv-1", json=full)).json()["result"] \
+        == "updated"
+    assert (await internal.get("/maintenance/work-orders/rv-1")).json()["review"]["comment"] \
+        == "主服务器全量推送"
+
+
+async def test_review_endpoint_defaults_to_now(internal):
+    from datetime import UTC, datetime
+
+    await internal.put("/maintenance/work-orders/rv-2",
+                       json=work_order("rv-2", updated_at="2026-01-01T00:00:00Z"))
+    before = datetime.now(UTC)
+    r = await internal.put("/maintenance/work-orders/rv-2/review", json={"outcome": "accurate"})
+    assert r.status_code == 200, r.text
+    wo = r.json()
+    rv = wo["review"]
+    times = [datetime.fromisoformat(rv[k]) for k in ("reviewed_at", "updated_at", "archived_at")]
+    assert all(before - timedelta(seconds=1) <= t <= datetime.now(UTC) for t in times)
+    assert rv["archived_at"] == rv["reviewed_at"] and rv["comment"] == ""
+    assert wo["updated_at"] == rv["updated_at"] and wo["status"] == "confirmed"
+    # a later edit without times keeps the first archive time
+    wo = (await internal.put("/maintenance/work-orders/rv-2/review",
+                             json={"outcome": "needs_revision"})).json()
+    assert wo["review"]["archived_at"] == rv["archived_at"]
+    assert wo["review"]["outcome"] == "needs_revision"

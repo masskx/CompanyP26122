@@ -63,6 +63,19 @@ main server -> PUT /internal/v1/maintenance/work-orders/{event_id}   (copy kept 
 - `PUT /internal/v1/maintenance/work-orders/{event_id}`: the main server pushes each work order
   after creating or updating it and after the human review. A push older than the stored copy
   (`updated_at`) is ignored and reported as `"stale"`. Reviewer identity is not accepted.
+- `PUT /internal/v1/maintenance/work-orders/{event_id}/review`: only the latest human review /
+  archive conclusion of an existing copy.
+  - **Body:** `{outcome: accurate | needs_revision, comment?, reviewed_at?, updated_at?,
+    archived_at?}`. `comment` holds at most 2000 characters.
+  - **Times:** they must include a time zone (otherwise 422); omitted ones default to now.
+  - **`archived_at`:** on the first archive it defaults to `reviewed_at`; later edits keep
+    the stored value unless one is sent.
+  - **Result:** the copy gets that single review (no history), `status: confirmed`,
+    `updated_at` (`source_updated_at`) = the review's `updated_at`, and a new `received_at`.
+    The response is the updated work order, the same as `GET`.
+  - **Errors:** 404 `work_order_not_found`; 409 `stale_review` when `updated_at` is older
+    than the copy's (an equal one overwrites).
+  - Reviewer identity is not accepted: fields such as `reviewed_by` are ignored.
 - `GET /internal/v1/maintenance/work-orders[/{event_id}]` reads the copy.
 
 ## Rules (`app/maintenance/detect.py`, `rules.py`)
