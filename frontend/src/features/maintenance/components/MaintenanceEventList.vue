@@ -93,7 +93,21 @@ function setPage(page: number) {
       <span aria-live="polite">共 {{ maintenance.filteredEvents.length }} 条</span>
     </header>
 
-    <div v-if="maintenance.filteredEvents.length > 0" class="event-table-wrap">
+    <div v-if="maintenance.isLoadingEvents" class="event-list__state">
+      正在加载事件…
+    </div>
+
+    <div
+      v-else-if="maintenance.eventsError"
+      class="event-list__state event-list__state--error"
+    >
+      <p>{{ maintenance.eventsError }}</p>
+      <button type="button" @click="maintenance.loadEvents()">
+        重新加载
+      </button>
+    </div>
+
+    <div v-else-if="maintenance.filteredEvents.length > 0" class="event-table-wrap">
       <table class="event-table">
         <thead>
           <tr>
@@ -225,7 +239,7 @@ function setPage(page: number) {
         {{
           hasActiveFilters
             ? '可调整站点、设备类型或搜索条件后重试。'
-            : '检测到异常后，新事件将显示在这里。'
+            : '检测到异常后，主服务器推送的事件将显示在这里。'
         }}
       </p>
     </div>
@@ -560,6 +574,41 @@ function setPage(page: number) {
 .event-actions__view svg {
   width: 16px;
   height: 16px;
+}
+
+.event-list__state {
+  display: flex;
+  min-height: 220px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 32px 24px;
+  color: #5f7487;
+  font-size: 14px;
+  text-align: center;
+}
+
+.event-list__state p {
+  margin: 0;
+}
+
+.event-list__state button {
+  min-height: 36px;
+  padding: 7px 16px;
+  border: 1px solid #c9dceb;
+  border-radius: 7px;
+  background: #f5faff;
+  color: #176cc0;
+  font-size: 13px;
+}
+
+.event-list__state button:hover {
+  background: #eaf4fd;
+}
+
+.event-list__state--error {
+  color: #8a4b4b;
 }
 
 .event-list__empty {

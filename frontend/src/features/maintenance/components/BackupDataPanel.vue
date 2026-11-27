@@ -1,10 +1,18 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { BackupTrend } from '../types'
 import { formatPercent } from '../utils'
 
 const props = defineProps<{
   trend: BackupTrend
 }>()
+
+const hasData = computed(
+  () =>
+    props.trend.currentBattery !== null ||
+    props.trend.estimatedRuntimeHours !== null ||
+    props.trend.historicalRuntimeHours !== null,
+)
 </script>
 
 <template>
@@ -16,7 +24,9 @@ const props = defineProps<{
       <div>
         <h3 id="backup-data-title">近 24 小时电量与续航参考</h3>
       </div>
-      <span class="data-panel__source">演示数据 · 待接入数据库</span>
+      <span class="data-panel__source">
+        {{ hasData ? 'IoTDB 时序数据' : '暂无时序数据' }}
+      </span>
     </header>
 
     <div class="backup-summary">
@@ -26,7 +36,11 @@ const props = defineProps<{
           <p>电量不等同于剩余容量</p>
         </div>
         <strong>
-          {{ formatPercent(props.trend.currentBattery / 100) }}
+          {{
+            props.trend.currentBattery === null
+              ? '无数据'
+              : formatPercent(props.trend.currentBattery / 100)
+          }}
         </strong>
       </section>
 
@@ -39,12 +53,24 @@ const props = defineProps<{
         <div class="runtime-values">
           <div>
             <span>当前估算</span>
-            <strong>{{ props.trend.estimatedRuntimeHours }} h</strong>
+            <strong>
+              {{
+                props.trend.estimatedRuntimeHours === null
+                  ? '无数据'
+                  : `${props.trend.estimatedRuntimeHours} h`
+              }}
+            </strong>
           </div>
           <i aria-hidden="true"></i>
           <div>
             <span>历史参考</span>
-            <strong>{{ props.trend.historicalRuntimeHours }} h</strong>
+            <strong>
+              {{
+                props.trend.historicalRuntimeHours === null
+                  ? '无数据'
+                  : `${props.trend.historicalRuntimeHours} h`
+              }}
+            </strong>
           </div>
         </div>
 

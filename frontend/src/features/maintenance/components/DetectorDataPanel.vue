@@ -54,6 +54,8 @@ const timeLabels = computed(() =>
   ),
 )
 
+const hasData = computed(() => timeLabels.value.length > 0)
+
 function alignSeries(points: TimeSeriesPoint[]) {
   const valuesByTime = new Map(
     points.map((point) => [point.time, point.value]),
@@ -239,6 +241,9 @@ const chartOption = computed<EChartsCoreOption>(() => ({
       <div>
         <h3 id="detector-data-title">电离室 · 剂量率与雨量</h3>
       </div>
+      <span class="data-source">
+        {{ hasData ? 'IoTDB 时序数据' : '暂无时序数据' }}
+      </span>
     </header>
 
     <div class="period-controls">
@@ -273,10 +278,12 @@ const chartOption = computed<EChartsCoreOption>(() => ({
       :aria-labelledby="`detector-period-${activePeriod}`"
     >
       <EChart
+        v-if="hasData"
         :option="chartOption"
         :label="`${activePeriodMeta.label}剂量率散点图与降雨量柱状图`"
         height="240px"
       />
+      <p v-else class="data-empty">该时段暂无时序数据。</p>
 
       <div class="sampling-summary" aria-live="polite">
         <span>时段采样点 {{ sampleSummary.total }} 个</span>
@@ -316,6 +323,28 @@ const chartOption = computed<EChartsCoreOption>(() => ({
   justify-content: space-between;
   gap: 20px;
   margin-bottom: 2px;
+}
+
+.data-source {
+  flex: none;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: #f1f5f8;
+  color: #65798b;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.data-empty {
+  display: grid;
+  min-height: 240px;
+  margin: 0;
+  place-items: center;
+  border: 1px dashed #d7e2eb;
+  border-radius: 10px;
+  background: #fbfdff;
+  color: #7b8fa1;
+  font-size: 13px;
 }
 
 .data-panel__heading h3 {

@@ -41,9 +41,9 @@ export interface DetectorTrend {
 
 export interface BackupTrend {
   battery: TimeSeriesPoint[]
-  currentBattery: number
-  estimatedRuntimeHours: number
-  historicalRuntimeHours: number
+  currentBattery: number | null
+  estimatedRuntimeHours: number | null
+  historicalRuntimeHours: number | null
 }
 
 export type ExplanationSource = 'model' | 'template'
@@ -125,6 +125,7 @@ interface MaintenanceEventBase {
   triggeredAt: string
   siteId: string
   siteName: string
+  equipmentId?: string
   equipmentName: string
   eventTitle: string
   eventSource: EventSource

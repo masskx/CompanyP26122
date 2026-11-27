@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { defineAsyncComponent } from 'vue'
+import { defineAsyncComponent, onMounted } from 'vue'
 import MaintenanceEventList from './components/MaintenanceEventList.vue'
 import MaintenanceToolbar from './components/MaintenanceToolbar.vue'
 import { useMaintenanceStore } from './stores/maintenance'
@@ -8,6 +8,10 @@ const MaintenanceEventDialog = defineAsyncComponent(
   () => import('./components/MaintenanceEventDialog.vue'),
 )
 const maintenance = useMaintenanceStore()
+
+onMounted(() => {
+  void maintenance.loadEvents()
+})
 </script>
 
 <template>

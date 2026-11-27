@@ -1,4 +1,4 @@
-import axios, { type AxiosError } from 'axios'
+import axios, { type AxiosError, type AxiosInstance } from 'axios'
 
 interface ApiErrorPayload {
   message?: string
@@ -55,34 +55,40 @@ function readErrorPayload(payload: unknown): ApiErrorPayload {
   }
 }
 
+export function createHttp(baseURL: string): AxiosInstance {
+  const instance = axios.create({
+    baseURL,
+    timeout: 30_000,
+    headers: {
+      Accept: 'application/json',
+    },
+  })
+
+  instance.interceptors.response.use(
+    (response) => response,
+    (error: AxiosError) => {
+      const payload = readErrorPayload(error.response?.data)
+      const message =
+        payload.message ||
+        payload.detail ||
+        error.message ||
+        '请求失败，请稍后重试'
+
+      return Promise.reject(
+        new ApiError(message, {
+          status: error.response?.status,
+          code: payload.code || error.code,
+          originalError: error,
+        }),
+      )
+    },
+  )
+
+  return instance
+}
+
 const baseURL = import.meta.env.VITE_API_BASE_URL?.trim() || '/api'
 
-const http = axios.create({
-  baseURL,
-  timeout: 30_000,
-  headers: {
-    Accept: 'application/json',
-  },
-})
-
-http.interceptors.response.use(
-  (response) => response,
-  (error: AxiosError) => {
-    const payload = readErrorPayload(error.response?.data)
-    const message =
-      payload.message ||
-      payload.detail ||
-      error.message ||
-      '请求失败，请稍后重试'
-
-    return Promise.reject(
-      new ApiError(message, {
-        status: error.response?.status,
-        code: payload.code || error.code,
-        originalError: error,
-      }),
-    )
-  },
-)
+const http = createHttp(baseURL)
 
 export default http

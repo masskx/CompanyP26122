@@ -18,6 +18,7 @@ const outcome = ref<ReviewOutcome | null>(
 )
 const comment = ref(props.event.review?.comment ?? '')
 const isEditing = ref(false)
+const submitting = ref(false)
 
 const isReviewed = computed(() => props.event.status === 'confirmed')
 const canSubmit = computed(
@@ -49,23 +50,34 @@ function cancelEditing() {
   isEditing.value = false
 }
 
-function submitReview() {
-  if (!outcome.value || !canSubmit.value) {
+async function submitReview() {
+  if (!outcome.value || !canSubmit.value || submitting.value) {
     return
   }
 
-  if (isEditing.value) {
-    if (maintenance.updateReview(
+  submitting.value = true
+  try {
+    if (isEditing.value) {
+      if (
+        await maintenance.updateReview(
+          props.event.id,
+          outcome.value,
+          comment.value,
+        )
+      ) {
+        isEditing.value = false
+      }
+      return
+    }
+
+    await maintenance.submitReview(
       props.event.id,
       outcome.value,
       comment.value,
-    )) {
-      isEditing.value = false
-    }
-    return
+    )
+  } finally {
+    submitting.value = false
   }
-
-  maintenance.submitReview(props.event.id, outcome.value, comment.value)
 }
 </script>
 
@@ -179,13 +191,15 @@ function submitReview() {
           </button>
           <button
             type="button"
-            :disabled="!canSubmit"
+            :disabled="!canSubmit || submitting"
             @click="submitReview"
           >
             {{
-              isEditing
-                ? '保存修改'
-                : '确认'
+              submitting
+                ? '提交中…'
+                : isEditing
+                  ? '保存修改'
+                  : '确认'
             }}
           </button>
         </div>

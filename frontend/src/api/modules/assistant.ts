@@ -251,7 +251,7 @@ export async function streamAssistantChat(
   sessionId: string | undefined,
   options: AssistantStreamOptions,
 ): Promise<void> {
-  const response = await fetch(apiURL('/v1/assistant/chat'), {
+  const response = await fetch(apiURL('/v1/chat'), {
     method: 'POST',
     headers: {
       Accept: 'text/event-stream',

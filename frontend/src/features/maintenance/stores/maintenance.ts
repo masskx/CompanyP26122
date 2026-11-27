@@ -1,6 +1,18 @@
 import { computed, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { createDemoEvents } from '../fixtures/demoEvents'
+import { ApiError } from '@/api'
+import {
+  listStations,
+  listWorkOrders,
+  putWorkOrderReview,
+  type StationSummary,
+} from '@/api/modules/maintenance'
+import {
+  applyWorkOrderToEvent,
+  indexStations,
+  workOrderToEvent,
+} from '../adapter'
+import { loadEventTrends } from '../trends'
 import {
   equipmentTypeLabels,
   eventSourceLabels,
@@ -16,13 +28,29 @@ const DEFAULT_FILTERS: MaintenanceFilters = {
   keyword: '',
 }
 
+function errorText(error: unknown): string {
+  if (error instanceof ApiError && error.message.trim()) {
+    return error.message
+  }
+  if (error instanceof Error && error.message.trim()) {
+    return error.message
+  }
+  return '维护事件请求失败，请稍后重试。'
+}
+
 export const useMaintenanceStore = defineStore('maintenance', () => {
-  const events = ref<MaintenanceEvent[]>(createDemoEvents())
+  const events = ref<MaintenanceEvent[]>([])
   const activeTab = ref<MaintenanceTab>('pending')
   const selectedEventId = ref<string | null>(null)
   const notice = ref<string | null>(null)
   const filters = reactive<MaintenanceFilters>({ ...DEFAULT_FILTERS })
+  const isLoadingEvents = ref(false)
+  const eventsError = ref<string | null>(null)
+
+  let stationIndex = new Map<string, StationSummary>()
   let noticeTimer: ReturnType<typeof setTimeout> | undefined
+  const loadedTrends = new Set<string>()
+  const loadingTrends = new Set<string>()
 
   const pendingCount = computed(
     () => events.value.filter((event) => event.status === 'pending').length,
@@ -34,7 +62,9 @@ export const useMaintenanceStore = defineStore('maintenance', () => {
 
   const selectedEvent = computed(
     () =>
-      events.value.find((event) => event.id === selectedEventId.value) ?? null,
+      events.value.find(
+        (event) => event.id === selectedEventId.value,
+      ) ?? null,
   )
 
   const siteOptions = computed(() => {
@@ -109,6 +139,66 @@ export const useMaintenanceStore = defineStore('maintenance', () => {
     }, 3200)
   }
 
+  async function loadEvents() {
+    if (isLoadingEvents.value) {
+      return
+    }
+
+    isLoadingEvents.value = true
+    eventsError.value = null
+    loadedTrends.clear()
+    loadingTrends.clear()
+
+    try {
+      const [orders, stations] = await Promise.all([
+        listWorkOrders(),
+        listStations().catch(() => [] as StationSummary[]),
+      ])
+      stationIndex = indexStations(stations)
+      events.value = orders
+        .map((order) => workOrderToEvent(order, stationIndex))
+        .sort(
+          (left, right) =>
+            new Date(right.triggeredAt).getTime() -
+            new Date(left.triggeredAt).getTime(),
+        )
+
+      if (
+        selectedEventId.value &&
+        !events.value.some((event) => event.id === selectedEventId.value)
+      ) {
+        selectedEventId.value = null
+      }
+    } catch (error) {
+      eventsError.value = errorText(error)
+    } finally {
+      isLoadingEvents.value = false
+    }
+  }
+
+  async function ensureTrends(eventId: string) {
+    const event = events.value.find((item) => item.id === eventId)
+    if (!event || loadedTrends.has(eventId) || loadingTrends.has(eventId)) {
+      return
+    }
+
+    loadingTrends.add(eventId)
+    try {
+      const trends = await loadEventTrends(event)
+      if (event.equipmentType === 'detector' && trends.detectorTrend) {
+        event.detectorTrend = trends.detectorTrend
+      }
+      if (event.equipmentType === 'backup_power' && trends.backupTrend) {
+        event.backupTrend = trends.backupTrend
+      }
+      loadedTrends.add(eventId)
+    } catch {
+      // Keep the empty trend; the panels explain that the period has no data.
+    } finally {
+      loadingTrends.delete(eventId)
+    }
+  }
+
   function setActiveTab(tab: MaintenanceTab) {
     activeTab.value = tab
   }
@@ -119,65 +209,62 @@ export const useMaintenanceStore = defineStore('maintenance', () => {
 
   function openEvent(eventId: string) {
     selectedEventId.value = eventId
+    void ensureTrends(eventId)
   }
 
   function closeEvent() {
     selectedEventId.value = null
   }
 
-  function submitReview(
+  async function submitReview(
     eventId: string,
     outcome: ReviewOutcome,
     comment: string,
-  ): boolean {
+  ): Promise<boolean> {
     const event = events.value.find((item) => item.id === eventId)
-    const normalizedComment = comment.trim()
 
-    if (
-      !event ||
-      event.status !== 'pending'
-    ) {
+    if (!event || event.status !== 'pending') {
       return false
     }
 
-    const reviewedAt = new Date().toISOString()
-    event.status = 'confirmed'
-    event.review = {
-      outcome,
-      comment: normalizedComment,
-      reviewedAt,
-      reviewedBy: '值班操作员',
+    try {
+      const updated = await putWorkOrderReview(eventId, {
+        outcome,
+        comment: comment.trim(),
+      })
+      applyWorkOrderToEvent(event, updated, stationIndex)
+      closeEvent()
+      showNotice('人工审核已提交，事件已归档')
+      return true
+    } catch (error) {
+      showNotice(errorText(error))
+      return false
     }
-    closeEvent()
-    showNotice('人工审核已提交，事件已归档')
-    return true
   }
 
-  function updateReview(
+  async function updateReview(
     eventId: string,
     outcome: ReviewOutcome,
     comment: string,
-  ): boolean {
+  ): Promise<boolean> {
     const event = events.value.find((item) => item.id === eventId)
 
-    if (
-      !event ||
-      event.status !== 'confirmed' ||
-      !event.review
-    ) {
+    if (!event || event.status !== 'confirmed' || !event.review) {
       return false
     }
 
-    const normalizedComment = comment.trim()
-    const updatedAt = new Date().toISOString()
-    event.review = {
-      ...event.review,
-      outcome,
-      comment: normalizedComment,
-      updatedAt,
+    try {
+      const updated = await putWorkOrderReview(eventId, {
+        outcome,
+        comment: comment.trim(),
+      })
+      applyWorkOrderToEvent(event, updated, stationIndex)
+      showNotice('已确认审核记录已更新')
+      return true
+    } catch (error) {
+      showNotice(errorText(error))
+      return false
     }
-    showNotice('已确认审核记录已更新')
-    return true
   }
 
   return {
@@ -187,10 +274,13 @@ export const useMaintenanceStore = defineStore('maintenance', () => {
     selectedEvent,
     notice,
     filters,
+    isLoadingEvents,
+    eventsError,
     pendingCount,
     confirmedCount,
     siteOptions,
     filteredEvents,
+    loadEvents,
     setActiveTab,
     resetFilters,
     openEvent,

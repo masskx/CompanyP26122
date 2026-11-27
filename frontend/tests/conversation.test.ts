@@ -30,7 +30,7 @@ describe('conversation API', () => {
       .mockResolvedValue({ data: [session] } as never)
 
     await expect(listSessions(20, 40)).resolves.toEqual([session])
-    expect(get).toHaveBeenCalledWith('/v1/assistant/sessions', {
+    expect(get).toHaveBeenCalledWith('/v1/sessions', {
       params: { limit: 20, offset: 40 },
     })
   })
@@ -55,15 +55,15 @@ describe('conversation API', () => {
     await renameSession('s/1', '新标题')
     await deleteSession('s/1')
 
-    expect(post).toHaveBeenCalledWith('/v1/assistant/sessions', {
+    expect(post).toHaveBeenCalledWith('/v1/sessions', {
       title: '新对话',
     })
-    expect(post).toHaveBeenLastCalledWith('/v1/assistant/sessions', undefined)
-    expect(get).toHaveBeenCalledWith('/v1/assistant/sessions/s%2F1')
-    expect(patch).toHaveBeenCalledWith('/v1/assistant/sessions/s%2F1', {
+    expect(post).toHaveBeenLastCalledWith('/v1/sessions', undefined)
+    expect(get).toHaveBeenCalledWith('/v1/sessions/s%2F1')
+    expect(patch).toHaveBeenCalledWith('/v1/sessions/s%2F1', {
       title: '新标题',
     })
-    expect(remove).toHaveBeenCalledWith('/v1/assistant/sessions/s%2F1')
+    expect(remove).toHaveBeenCalledWith('/v1/sessions/s%2F1')
   })
 
   it('loads messages with before_seq pagination', async () => {
@@ -74,7 +74,7 @@ describe('conversation API', () => {
     await listMessages('s_1', 50, 79)
 
     expect(get).toHaveBeenCalledWith(
-      '/v1/assistant/sessions/s_1/messages',
+      '/v1/sessions/s_1/messages',
       {
         params: { limit: 50, before_seq: 79 },
       },

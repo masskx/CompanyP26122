@@ -39,7 +39,7 @@ export interface RemoteMessage {
   created_at: string
 }
 
-const sessionsPath = '/v1/assistant/sessions'
+const sessionsPath = '/v1/sessions'
 
 export function listSessions(limit = 20, offset = 0): Promise<RemoteSession[]> {
   return http
